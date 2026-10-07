@@ -2354,7 +2354,7 @@ def render_command_center(current_week, current_date):
                                            c_b.number_input(f"{days_en[i][:3]} PAX burn (%)", value=0.0, step=0.1, key=f"cc_mpax_{i}"))
 
         # ---- Environment & Anomalies ----
-        with col_env.popover("🌦️ Environment & Anomalies"):
+        with col_env.popover("🌦️ Climate / Anomalies"):
             p_climate = st.toggle("Enable Climate Tree (rain adjustments and packages)", value=True, key="cc_clima")
             p_anoms = st.toggle("Apply scheduled anomalies", value=True, key="cc_anoms")
             st.divider()

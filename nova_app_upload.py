@@ -865,8 +865,10 @@ def build_adjustment_flags(df_clim, df_w_daily, climate_on):
         pkg = int(r.get('package', 0))
         if climate_on and pkg == 6:
             icons.append("🚨"); tips.append("Package 6 safety lock")
-        elif climate_on and (pkg >= 2 or any(abs(r[f'mult_{m}'] - 1.0) > 1e-9 for m in FUNNEL_METRICS)):
-            icons.append("🌧️"); tips.append(f"Climate adjustment ({r['intensity_cat']}" + (f", package {pkg}" if pkg else "") + ")")
+        elif climate_on and any(abs(r[f'mult_{m}'] - 1.0) > 1e-9 for m in FUNNEL_METRICS):
+            icons.append("🌧️"); tips.append(f"Climate adjustment applied to the forecast ({r['intensity_cat']}" + (f", package {pkg}" if pkg else "") + ")")
+        elif climate_on and pkg >= 2:
+            icons.append("☔"); tips.append(f"Rain package {pkg}: budget action only, the forecast is unchanged (no multipliers for this rain bucket)")
         if bool(r.get('has_anomaly', False)):
             icons.append("⚡"); tips.append("Saved anomaly applied")
         if r['date'] in heat_dates:
@@ -1797,7 +1799,7 @@ def render_timeline_charts(df_historical, df_org, df_anom, df_clim, week, flags=
         st.altair_chart(create_chart('etr', 'End-to-End Conv. Rate (ETR %)', '#FF1493'), use_container_width=True)
     if flags is not None and not flags.empty:
         st.caption("Icons along the bottom of each chart mark adjusted days (hover for the reason): "
-                   "🌧️ climate adjustment · ⚡ saved anomaly · 🚨 safety lock (package 6) · 🔥 heatwave.")
+                   "🌧️ forecast changed by climate · ☔ rain package only (forecast unchanged) · ⚡ saved anomaly · 🚨 safety lock (package 6) · 🔥 heatwave.")
 
 
 def render_weather_detail(df_climate, df_hourly, city_name, input_week, df_pkg=None):

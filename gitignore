@@ -1,5 +1,4 @@
 bq_key.json
-.streamlit/secrets.toml
 __pycache__/
 *.pyc
 *.tmp

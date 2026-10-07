@@ -1,0 +1,1314 @@
+{
+  "Aguascalientes": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9979,
+        "calls": 1.0018,
+        "eyeballs": 0.9765,
+        "tsh": 1.0256
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 1.0015,
+        "calls": 1.0126,
+        "eyeballs": 1.0141,
+        "tsh": 1.0021
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 1.0007,
+        "calls": 1.0484,
+        "eyeballs": 1.0403,
+        "tsh": 1.0037
+      },
+      "Maybe": {
+        "trips": 0.9282,
+        "calls": 0.8369,
+        "eyeballs": 0.7725,
+        "tsh": 1.071
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": 1.1114,
+        "calls": 1.048,
+        "eyeballs": 0.9448,
+        "tsh": 1.1492
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Cancun": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 1.0137,
+        "calls": 1.0065,
+        "eyeballs": 1.0081,
+        "tsh": 1.0098
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 1.0077,
+        "calls": 1.0019,
+        "eyeballs": 0.998,
+        "tsh": 1.0141
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 0.9698,
+        "calls": 0.9973,
+        "eyeballs": 1.0212,
+        "tsh": 0.9845
+      },
+      "Maybe": {
+        "trips": 0.9717,
+        "calls": 1.0132,
+        "eyeballs": 1.0511,
+        "tsh": 0.9653
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": 0.8363,
+        "calls": 1.5475,
+        "eyeballs": 1.8221,
+        "tsh": 0.8102
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Chihuahua": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9899,
+        "calls": 0.9903,
+        "eyeballs": 0.9877,
+        "tsh": 1.0062
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 0.9785,
+        "calls": 0.9932,
+        "eyeballs": 0.9963,
+        "tsh": 1.0194
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 0.9776,
+        "calls": 0.9277,
+        "eyeballs": 0.9103,
+        "tsh": 1.0768
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Cuernavaca": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9988,
+        "calls": 1.0121,
+        "eyeballs": 1.008,
+        "tsh": 1.005
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 1.0121,
+        "calls": 1.018,
+        "eyeballs": 1.0119,
+        "tsh": 1.0301
+      },
+      "Maybe": {
+        "trips": 1.0624,
+        "calls": 1.1182,
+        "eyeballs": 1.0435,
+        "tsh": 1.0982
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": 1.014,
+        "calls": 1.0989,
+        "eyeballs": 1.1284,
+        "tsh": 0.9943
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Culiacan": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 1.0038,
+        "calls": 1.0144,
+        "eyeballs": 1.0156,
+        "tsh": 1.0153
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 0.9792,
+        "calls": 0.973,
+        "eyeballs": 0.973,
+        "tsh": 1.001
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 0.9694,
+        "calls": 0.9498,
+        "eyeballs": 0.9446,
+        "tsh": 0.9942
+      },
+      "Maybe": {
+        "trips": 0.9794,
+        "calls": 0.9467,
+        "eyeballs": 0.9674,
+        "tsh": 1.0047
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Guadalajara": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9944,
+        "calls": 0.9845,
+        "eyeballs": 0.9692,
+        "tsh": 0.9993
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 1.0009,
+        "calls": 1.0133,
+        "eyeballs": 0.9817,
+        "tsh": 1.0153
+      },
+      "Maybe": {
+        "trips": 1.0022,
+        "calls": 1.0121,
+        "eyeballs": 1.0322,
+        "tsh": 1.0105
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": 0.9843,
+        "calls": 1.0218,
+        "eyeballs": 1.0931,
+        "tsh": 0.986
+      },
+      "Yes": {
+        "trips": 1.1066,
+        "calls": 1.0451,
+        "eyeballs": 0.9817,
+        "tsh": 1.1176
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Leon": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9954,
+        "calls": 0.9872,
+        "eyeballs": 0.9838,
+        "tsh": 1.0038
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 0.997,
+        "calls": 1.0052,
+        "eyeballs": 1.0153,
+        "tsh": 1.0167
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 1.0166,
+        "calls": 1.0734,
+        "eyeballs": 1.0613,
+        "tsh": 1.0138
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Mazatlan": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 1.0108,
+        "calls": 1.0147,
+        "eyeballs": 1.0149,
+        "tsh": 1.0244
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 0.9935,
+        "calls": 0.981,
+        "eyeballs": 0.9899,
+        "tsh": 1.0143
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 0.9535,
+        "calls": 0.9958,
+        "eyeballs": 1.0037,
+        "tsh": 0.9547
+      },
+      "Maybe": {
+        "trips": 1.0024,
+        "calls": 0.9803,
+        "eyeballs": 0.9938,
+        "tsh": 1.0226
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": 1.0714,
+        "calls": 0.9512,
+        "eyeballs": 0.9201,
+        "tsh": 1.0478
+      },
+      "Yes": {
+        "trips": 1.0383,
+        "calls": 1.0373,
+        "eyeballs": 1.0402,
+        "tsh": 1.0509
+      }
+    }
+  },
+  "Mexicali": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9702,
+        "calls": 0.9699,
+        "eyeballs": 0.9837,
+        "tsh": 0.9993
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 0.9565,
+        "calls": 0.9566,
+        "eyeballs": 0.9416,
+        "tsh": 0.9552
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Mexico City": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9976,
+        "calls": 0.9972,
+        "eyeballs": 0.9901,
+        "tsh": 1.0012
+      },
+      "Maybe": {
+        "trips": 1.0169,
+        "calls": 1.0272,
+        "eyeballs": 1.04,
+        "tsh": 1.0139
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 1.0135,
+        "calls": 1.0197,
+        "eyeballs": 1.0294,
+        "tsh": 1.0215
+      },
+      "Maybe": {
+        "trips": 1.0012,
+        "calls": 1.0145,
+        "eyeballs": 1.0165,
+        "tsh": 1.0028
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": 1.0064,
+        "calls": 1.0106,
+        "eyeballs": 1.0097,
+        "tsh": 1.0211
+      },
+      "Yes": {
+        "trips": 1.0423,
+        "calls": 1.056,
+        "eyeballs": 1.0155,
+        "tsh": 1.072
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Monterrey": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9949,
+        "calls": 0.9832,
+        "eyeballs": 0.9738,
+        "tsh": 1.0093
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 0.9731,
+        "calls": 0.9909,
+        "eyeballs": 1.0402,
+        "tsh": 0.9861
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 0.8824,
+        "calls": 1.0489,
+        "eyeballs": 1.19,
+        "tsh": 0.9259
+      },
+      "Maybe": {
+        "trips": 0.928,
+        "calls": 0.9582,
+        "eyeballs": 1.0286,
+        "tsh": 0.9669
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Puebla": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.998,
+        "calls": 0.9887,
+        "eyeballs": 0.984,
+        "tsh": 1.0097
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 1.0053,
+        "calls": 0.9968,
+        "eyeballs": 1.0015,
+        "tsh": 0.9871
+      },
+      "Maybe": {
+        "trips": 0.9886,
+        "calls": 1.0029,
+        "eyeballs": 1.0544,
+        "tsh": 0.9743
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": 0.9859,
+        "calls": 1.045,
+        "eyeballs": 1.1194,
+        "tsh": 0.9829
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Queretaro": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 1.0067,
+        "calls": 0.9939,
+        "eyeballs": 0.9949,
+        "tsh": 1.011
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 1.0004,
+        "calls": 1.0256,
+        "eyeballs": 1.0704,
+        "tsh": 1.0214
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 0.991,
+        "calls": 0.9742,
+        "eyeballs": 0.9846,
+        "tsh": 1.0126
+      },
+      "Maybe": {
+        "trips": 0.9962,
+        "calls": 1.0216,
+        "eyeballs": 1.0151,
+        "tsh": 0.9742
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Tijuana": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 0.9939,
+        "calls": 0.9751,
+        "eyeballs": 0.9611,
+        "tsh": 1.0194
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 0.9635,
+        "calls": 0.9478,
+        "eyeballs": 0.9665,
+        "tsh": 1.0139
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 1.0342,
+        "calls": 1.031,
+        "eyeballs": 1.0926,
+        "tsh": 0.9946
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Toluca": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 1.0025,
+        "calls": 1.0114,
+        "eyeballs": 1.0067,
+        "tsh": 1.0063
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 1.0048,
+        "calls": 1.0001,
+        "eyeballs": 0.9993,
+        "tsh": 1.0083
+      },
+      "Maybe": {
+        "trips": 0.9728,
+        "calls": 0.9717,
+        "eyeballs": 0.9687,
+        "tsh": 1.0123
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": 0.9923,
+        "calls": 1.0175,
+        "eyeballs": 1.0555,
+        "tsh": 1.0661
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  },
+  "Torreon": {
+    "Light (0-2.5mm)": {
+      "No": {
+        "trips": 1.0045,
+        "calls": 0.9965,
+        "eyeballs": 0.9815,
+        "tsh": 1.0194
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Moderate (2.5-7.5mm)": {
+      "No": {
+        "trips": 0.9809,
+        "calls": 1.0133,
+        "eyeballs": 1.0269,
+        "tsh": 1.02
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Strong (7.5-15mm)": {
+      "No": {
+        "trips": 1.0007,
+        "calls": 0.9577,
+        "eyeballs": 0.9388,
+        "tsh": 1.0035
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    },
+    "Storm (>=15mm)": {
+      "No": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Maybe": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      },
+      "Yes": {
+        "trips": null,
+        "calls": null,
+        "eyeballs": null,
+        "tsh": null
+      }
+    }
+  }
+}

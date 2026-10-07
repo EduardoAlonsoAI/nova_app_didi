@@ -1,0 +1,8 @@
+streamlit>=1.39
+pandas>=2.0
+numpy
+altair>=5
+requests
+google-cloud-bigquery
+db-dtypes
+pyarrow

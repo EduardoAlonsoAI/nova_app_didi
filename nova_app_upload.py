@@ -364,7 +364,7 @@ def calculate_daily_lags(df_historical, target_date_str):
 RAIN_LEVEL_TOKENS = {
     'light': ('ligera', 'light'),
     'moderate': ('moderada', 'moderate'),
-    'heavy': ('fuerte', 'heavy'),
+    'heavy': ('fuerte', 'heavy', 'strong'),
     'storm': ('tormenta', 'storm'),
 }
 RAIN_LEVEL_LABEL = {'light': 'Light', 'moderate': 'Moderate', 'heavy': 'Heavy', 'storm': 'Storm'}
@@ -477,10 +477,30 @@ def load_weather_dict():
     return w
 
 
+CITY_ALIASES = {'cdmx': 'mexicocity', 'ciudaddemexico': 'mexicocity', 'df': 'mexicocity'}
+
+
+def _norm_city(name):
+    import unicodedata
+    s = unicodedata.normalize('NFKD', str(name)).encode('ascii', 'ignore').decode().lower()
+    s = ''.join(ch for ch in s if ch.isalnum())
+    return CITY_ALIASES.get(s, s)
+
+
+def city_key(w_dict, city_name):
+    """Key of the dictionary that belongs to this city, ignoring accents and aliases (Cancún = Cancun, CDMX = Mexico City). None if absent."""
+    if not isinstance(w_dict, dict): return None
+    if city_name in w_dict: return city_name
+    target = _norm_city(city_name)
+    for k in w_dict:
+        if _norm_city(k) == target: return k
+    return None
+
+
 def get_city_weather_block(w_dict, city_name):
-    block = w_dict.get(city_name)
-    if not isinstance(block, dict):
-        block = w_dict.get("CDMX")  # Legacy fallback kept from the previous version
+    """The city's own block. A city that is not in the dictionary gets an empty block (neutral multipliers), never another city's numbers."""
+    k = city_key(w_dict, city_name)
+    block = w_dict.get(k) if k is not None else None
     return block if isinstance(block, dict) else {}
 
 
@@ -604,8 +624,8 @@ def auto_calibrate_weather_dict(city_name, df_historical, ledger_city, df_w_dail
         if h_row.empty or not base: return None
 
         w_dict = load_weather_dict()
-        city_block = w_dict.get(city_name)  # Strict: never calibrate one city with another city's data
-        node = resolve_weather_node(city_block, intensity, flood) if isinstance(city_block, dict) else None
+        city_block = get_city_weather_block(w_dict, city_name)  # Strict: never calibrate one city with another city's data
+        node = resolve_weather_node(city_block, intensity, flood) if city_block else None
         if node is None: return None
 
         src = mult_source(node)
@@ -1903,6 +1923,10 @@ def render_kpi_cards(m_t, m_1, w_target, city_name):
     c8.metric("Projected GMV", f"${int(a['gmv']):,}", f"{_wow(a['gmv'], b['gmv']):+.1f}% WoW")
 
 
+def rows_bias_active(ctx):
+    return any(abs(f - 1.0) >= 0.005 for f in ctx['bias_factors'].values())
+
+
 def build_alerts(params, ctx, m_t, df_w_daily, weather_ok):
     """Nova's reading of weather, temperature, anomalies and ARIMA drift, most severe first. Bodies are small HTML tables."""
     alerts = []
@@ -1950,7 +1974,20 @@ def build_alerts(params, ctx, m_t, df_w_daily, weather_ok):
             rows = [[f"<b>{_day_lbl(r['date'])}</b>", esc(r['intensity_cat']), f"{r['rain_mm']:.1f} mm", f"P{int(r['package'])}",
                      f"x{r['mult_eyeballs']:.3f}", f"x{r['mult_calls']:.3f}", f"x{r['mult_trips']:.3f}", f"x{r['mult_tsh']:.3f}"] for _, r in adj.iterrows()]
             alerts.append({'level': 'info', 'title': f"🌧️ Climate shock: elasticity applied to the organic forecast on {len(adj)} day(s)",
-                           'body': html_table(["Day", "Rain", "Total", "Package", "Eyeballs", "Calls", "Trips", "Supply hrs"], rows)})
+                           'body': html_table(["Day", "Rain", "Amount", "Package", "Eyeballs", "Calls", "Trips", "Supply hrs"], rows)})
+
+        # Rain is forecast but nothing multiplied it: say WHY instead of staying silent
+        city_block = get_city_weather_block(load_weather_dict(), params['city_name'])
+        neutral = df_clim[(df_clim['intensity_cat'].map(rain_level) != 'none') & ((df_clim[mcols] == 1.0).all(axis=1))]
+        if not neutral.empty:
+            rows = []
+            for _, r in neutral.iterrows():
+                node = resolve_weather_node(city_block, r['intensity_cat'], r['flood_risk']) if city_block else None
+                why = ("city not in the weather dictionary" if not city_block else
+                       "no dictionary entry for this rain bucket" if node is None else "dictionary cell is empty (null) for this bucket")
+                rows.append([f"<b>{_day_lbl(r['date'])}</b>", esc(r['intensity_cat']), esc(r['flood_risk']), why])
+            alerts.append({'level': 'info', 'title': f"ℹ️ Rain forecast but no climate multiplier on {len(neutral)} day(s) (forecast left as organic)",
+                           'body': html_table(["Day", "Rain bucket", "Flood risk", "Why"], rows)})
 
     applied = ctx['anomalies_applied']
     if applied:
@@ -1972,6 +2009,12 @@ def build_alerts(params, ctx, m_t, df_w_daily, weather_ok):
     if rows:
         alerts.append({'level': 'info', 'title': '📈 Rolling Bias Corrector is active',
                        'body': html_table(["Metric", "ARIMA has been", "By", "Over the last", "Future days scaled by"], rows)})
+
+    if not rows_bias_active(ctx):
+        n_obs = max([d['n'] for d in ctx['bias_diag']] or [0])
+        alerts.append({'level': 'info', 'title': '📈 Rolling Bias Corrector: not correcting',
+                       'body': f"ARIMA memory has {n_obs} closed day(s) for this city (needs {BIAS_MIN_OBS}, all leaning the same way at least "
+                               f"{int(BIAS_MIN_CONSISTENCY * 100)}% of the time). It fills up as days pass; a restart of the server empties it."})
 
     a = agg_funnel(m_t)
     if a is not None:

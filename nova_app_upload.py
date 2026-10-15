@@ -23,7 +23,8 @@ from google.cloud import bigquery
 # Import externalized configs
 from nova_config import (
     CITIES_DICT, COORDINATES, WEATHER_IMPACT_DICT, REAL_TABLE,
-    get_history_query, get_forecast_query, get_burn_query, get_calibration_query
+    get_history_query, get_forecast_query, get_burn_query, get_calibration_query,
+    get_all_history_query, get_all_forecast_query
 )
 
 # =====================================================================
@@ -132,6 +133,8 @@ ANOMALY_MAX_DAYS = 30
 FORECAST_HORIZON_DAYS = 14    # ML.FORECAST horizon
 
 HEAT_THRESHOLD_C = 35.0
+# Rain buckets: identical to the keys of weather_impact.json (Light / Moderate / Strong / Storm)
+RAIN_BUCKET_LABELS = ['Light (0-2.5mm)', 'Moderate (2.5-7.5mm)', 'Strong (7.5-15mm)', 'Storm (>=15mm)']
 
 
 def today_mx():
@@ -146,6 +149,9 @@ def load_json(filepath, default=None):
         return {} if default is None else default
 
 
+# PERSISTENCE: every JSON the app keeps (weather dictionary, calibration log, ARIMA ledger, scheduled anomalies) is read and written
+# ONLY through load_json / save_json below. Migrating to BigQuery / Cloud Storage means re-implementing these two functions
+# (key = os.path.basename(filepath), value = the JSON document). Nothing else needs to change.
 def _json_default(o):
     if isinstance(o, np.floating): return float(o)
     if isinstance(o, np.integer): return int(o)
@@ -209,11 +215,12 @@ def get_weather_forecast(lat, lon, city_name):
             df_daily = df_daily.fillna(0)
 
             def classify_rain(mm):
-                if mm == 0: return 'No Rain', 0
-                elif mm <= 2.5: return 'Ligera (>0-2.5mm)', 25
-                elif mm <= 7.6: return 'Moderada (2.5-7.6mm)', 50
-                elif mm <= 50.0: return 'Fuerte (7.6-50mm)', 75
-                else: return 'Tormenta (>50mm)', 100
+                # Same buckets (and the exact same labels) as weather_impact.json
+                if mm <= 0: return 'No Rain', 0
+                elif mm <= 2.5: return RAIN_BUCKET_LABELS[0], 25
+                elif mm <= 7.5: return RAIN_BUCKET_LABELS[1], 50
+                elif mm < 15.0: return RAIN_BUCKET_LABELS[2], 75
+                else: return RAIN_BUCKET_LABELS[3], 100
 
             res = df_daily['rain_mm'].apply(classify_rain)
             df_daily['intensity_cat'] = [x[0] for x in res]
@@ -264,26 +271,50 @@ def get_weather_forecast(lat, lon, city_name):
 
 
 @st.cache_data(ttl=3600)
+def _prep_history(df):
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date').reset_index(drop=True)
+    df['etr_real'] = (df['trips_real'] / df['eyeballs_real'].replace(0, np.nan)) * 100
+    for c in ('cr_real', 'ecr_real', 'sdr_real'):
+        if c not in df.columns:
+            df[c] = np.nan
+    df['cr_real'] = df['trips_real'] / df['calls_real'].replace(0, np.nan) * 100
+    df['ecr_real'] = df['calls_real'] / df['eyeballs_real'].replace(0, np.nan) * 100
+    df['sdr_real'] = df['tsh_real'] / df['eyeballs_real'].replace(0, np.nan)
+    return df
+
+
+def _prep_forecast(df):
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    df['etr_forecast'] = (df['trips_forecast'] / df['eyeballs_forecast'].replace(0, np.nan)) * 100
+    if not df.empty:
+        days_en = {2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat', 1: 'Sun'}
+        df['day_name'] = df['dow'].map(days_en)
+    return df
+
+
 def get_city_data(city_id):
     if client is None:
         raise RuntimeError("BigQuery client is not available (check bq_key.json).")
-
-    query_history = get_history_query(city_id)
-    df_historical = client.query(query_history).to_dataframe()
-    df_historical['date'] = pd.to_datetime(df_historical['date'])
-    df_historical = df_historical.sort_values('date').reset_index(drop=True)
-    df_historical['etr_real'] = (df_historical['trips_real'] / df_historical['eyeballs_real'].replace(0, np.nan)) * 100
-
-    query_forecast = get_forecast_query(city_id)
-    df_forecast = client.query(query_forecast).to_dataframe()
-    df_forecast['date'] = pd.to_datetime(df_forecast['date'])
-    df_forecast['etr_forecast'] = (df_forecast['trips_forecast'] / df_forecast['eyeballs_forecast'].replace(0, np.nan)) * 100
-
-    if not df_forecast.empty:
-        days_en = {2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat', 1: 'Sun'}
-        df_forecast['day_name'] = df_forecast['dow'].map(days_en)
-
+    df_historical = _prep_history(client.query(get_history_query(city_id)).to_dataframe())
+    df_forecast = _prep_forecast(client.query(get_forecast_query(city_id)).to_dataframe())
     return df_historical, df_forecast
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_portfolio_data():
+    """All cities in two queries: {city_id: (df_historical, df_forecast)} with the same columns as get_city_data."""
+    if client is None:
+        raise RuntimeError("BigQuery client is not available (check bq_key.json).")
+    hist = client.query(get_all_history_query()).to_dataframe()
+    fcst = client.query(get_all_forecast_query()).to_dataframe()
+    out = {}
+    for cid, g in hist.groupby(hist['city_id'].astype(str)):
+        f = fcst[fcst['city_id'].astype(str) == cid].drop(columns=['city_id'])
+        out[cid] = (_prep_history(g.drop(columns=['city_id'])), _prep_forecast(f))
+    return out
 
 
 def week_monday(week, ref=None):
@@ -504,6 +535,95 @@ def get_city_weather_block(w_dict, city_name):
     return block if isinstance(block, dict) else {}
 
 
+# ---- Fallback chain for empty (null) dictionary cells --------------------------------------
+BORROW_SHRINK = {'city_flood': 0.75, 'pooled': 0.5}   # borrowed values are pulled toward 1.0 (they are less certain)
+POOLED_MIN_CITIES = 3                                  # need at least this many other cities with a number
+FLOOD_NEIGHBOURS = {'no': ('maybe', 'yes'), 'maybe': ('no', 'yes'), 'yes': ('maybe', 'no')}
+SRC_DICT, SRC_CITY_FLOOD, SRC_POOLED, SRC_TIED, SRC_NEUTRAL = 'dictionary', 'same-city flood levels', 'other cities', 'tied to trips', 'neutral'
+
+
+def _flood_level(label):
+    l = str(label).strip().lower()
+    for lvl, aliases in FLOOD_ALIASES.items():
+        if l == lvl or l in aliases: return lvl
+    return None
+
+
+def _node_at(city_block, intensity_cat, flood_lvl):
+    """The multiplier node of one (intensity, flood level) cell of a city block, or None."""
+    if not isinstance(city_block, dict): return None
+    lvl_key = find_intensity_key(city_block, intensity_cat)
+    if lvl_key is None: return None
+    lvl_node = city_block.get(lvl_key)
+    if not isinstance(lvl_node, dict): return None
+    if _has_metric_keys(lvl_node): return lvl_node
+    for k, v in lvl_node.items():
+        if _flood_level(k) == flood_lvl and isinstance(v, dict): return v
+    return None
+
+
+def _raw_mult(node, metric):
+    """A real number from the node or None (null / missing / <= 0 are all None)."""
+    src = mult_source(node)
+    if not isinstance(src, dict): return None
+    for a in MULT_ALIASES[metric]:
+        v = src.get(a)
+        if v is not None:
+            try:
+                f = float(v)
+                if np.isfinite(f) and f > 0: return f
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def resolve_multipliers(w_dict, city_name, intensity_cat, flood_risk, fill_gaps=True):
+    """
+    Multipliers for one rainy day and where each number came from. Per metric, in this order:
+      1. the city's own cell                                          (dictionary)
+      2. same city + same rain bucket, neighbouring flood level(s)    (same-city flood levels, pulled 25% toward 1.0)
+      3. median of the same cell in the other cities (>= 3 cities)    (other cities, pulled 50% toward 1.0)
+      4. 1.0                                                          (neutral)
+    GMV, when the dictionary has no GMV number at all, follows the trips multiplier (tied to trips).
+    With fill_gaps=False only step 1 and 4 exist (the strict behaviour). Never raises.
+    """
+    city_k = city_key(w_dict, city_name)
+    block = w_dict.get(city_k) if city_k is not None else None
+    block = block if isinstance(block, dict) else {}
+    flood_lvl = _flood_level(flood_risk)
+    own = _node_at(block, intensity_cat, flood_lvl)
+    mults, sources = {}, {}
+    for m in MULT_ALIASES:
+        v, src = _raw_mult(own, m), SRC_DICT
+        if v is None and fill_gaps and flood_lvl in FLOOD_NEIGHBOURS and block:
+            vals = [x for x in (_raw_mult(_node_at(block, intensity_cat, n), m) for n in FLOOD_NEIGHBOURS[flood_lvl]) if x is not None]
+            if vals:
+                raw = float(np.mean(vals)) if flood_lvl == 'maybe' else vals[0]
+                v, src = 1.0 + BORROW_SHRINK['city_flood'] * (raw - 1.0), SRC_CITY_FLOOD
+        if v is None and fill_gaps and flood_lvl is not None:
+            vals = []
+            for k, b in w_dict.items():
+                if k == city_k or not isinstance(b, dict): continue
+                x = _raw_mult(_node_at(b, intensity_cat, flood_lvl), m)
+                if x is not None: vals.append(x)
+            if len(vals) >= POOLED_MIN_CITIES:
+                v, src = 1.0 + BORROW_SHRINK['pooled'] * (float(np.median(vals)) - 1.0), SRC_POOLED
+        if v is None:
+            v, src = 1.0, SRC_NEUTRAL
+        mults[m], sources[m] = float(v), src
+    if sources.get('gmv') == SRC_NEUTRAL and sources.get('trips') != SRC_NEUTRAL:
+        mults['gmv'], sources['gmv'] = mults['trips'], SRC_TIED
+    return mults, sources
+
+
+def summarize_sources(sources):
+    """One word for a day: 'dictionary', a borrowed label, a mix, or 'neutral'."""
+    core = [s for m, s in sources.items() if m != 'gmv']
+    if all(s == SRC_NEUTRAL for s in core): return SRC_NEUTRAL
+    labels = sorted({s for s in core if s not in (SRC_DICT, SRC_NEUTRAL)})
+    return " + ".join(labels) if labels else SRC_DICT
+
+
 def peak_windows(rainy_hours):
     hrs = rainy_hours or []
     return [name for name, hit in (("AM peak", any(h in MORNING_PEAK for h in hrs)),
@@ -517,7 +637,7 @@ def classify_package(level, flood_risk, rain_mm_day, rainy_hours, is_weekend):
       P6  flood risk Yes OR daily rain > 50 mm                       (hazard override, always first)
       P1  light / moderate rain, no peak-hour rain                   (BAU)
       P2  light / moderate rain during a peak hour
-      P3  heavy rain during a daytime peak (AM or PM)
+      P3  heavy / storm rain during a daytime peak (AM or PM)
       P4  heavy / storm rain at night on a weekday
       P5  heavy / storm rain at night on a weekend
       P7  heavy / storm rain outside every peak, or timing unknown   (hold and monitor)
@@ -538,7 +658,7 @@ def classify_package(level, flood_risk, rain_mm_day, rainy_hours, is_weekend):
     if flood_risk == 'Yes' or rain_mm_day > STORM_DAILY_MM: pkg = 6
     elif level in ('light', 'moderate') and not is_peak: pkg = 1
     elif level in ('light', 'moderate') and is_peak: pkg = 2
-    elif level == 'heavy' and day_peak: pkg = 3
+    elif level in ('heavy', 'storm') and day_peak: pkg = 3
     elif level in ('heavy', 'storm') and night and not is_weekend: pkg = 4
     elif level in ('heavy', 'storm') and night and is_weekend: pkg = 5
     else: pkg = 7
@@ -561,22 +681,22 @@ def add_default_climate_cols(df):
     out['prescription'] = PACKAGE_PRESCRIPTION[0]
     out['alert'] = ""
     out['rain_windows'] = ""
+    out['mult_source'] = SRC_NEUTRAL
     for m in FUNNEL_METRICS: out[f'mult_{m}'] = 1.0
     return out
 
 
-def apply_climate(df, df_w_daily, df_w_hourly, w_dict, city_name):
+def apply_climate(df, df_w_daily, df_w_hourly, w_dict, city_name, fill_gaps=True):
     """Merges weather, multiplies the funnel and injects `package`, `prescription` and `alert` columns."""
     out = df.merge(df_w_daily[['date', 'rain_mm', 'intensity_cat', 'flood_risk']], on='date', how='left')
     out['rain_mm'] = out['rain_mm'].fillna(0.0)
     out['intensity_cat'] = out['intensity_cat'].fillna('No Rain')
     out['flood_risk'] = out['flood_risk'].fillna('No')
-    city_block = get_city_weather_block(w_dict, city_name)
-
     meta = []
     for _, r in out.iterrows():
         level = rain_level(r['intensity_cat'])
         mults = {m: 1.0 for m in FUNNEL_METRICS}
+        m_source = SRC_NEUTRAL
         pkg, alert, windows_txt = 0, "", ""
         if level != 'none':
             date_str = r['date'].strftime('%Y-%m-%d')
@@ -585,11 +705,12 @@ def apply_climate(df, df_w_daily, df_w_hourly, w_dict, city_name):
                 day_rows = df_w_hourly[df_w_hourly['date'] == date_str]
                 if not day_rows.empty:
                     rainy_hours = day_rows[day_rows['rain_mm'] >= PKG_RAIN_HOUR_MM]['hour'].tolist()
-            mults = read_weather_multipliers(resolve_weather_node(city_block, r['intensity_cat'], r['flood_risk']))
+            mults, srcs = resolve_multipliers(w_dict, city_name, r['intensity_cat'], r['flood_risk'], fill_gaps)
+            m_source = summarize_sources(srcs)
             pkg, alert = classify_package(level, r['flood_risk'], float(r['rain_mm']), rainy_hours, r['date'].dayofweek >= 5)
             windows_txt = " + ".join(peak_windows(rainy_hours)) or ("off-peak" if rainy_hours is not None else "unknown")
         row = {f'mult_{m}': v for m, v in mults.items()}
-        row.update({'package': pkg, 'prescription': PACKAGE_PRESCRIPTION[pkg], 'alert': alert, 'rain_windows': windows_txt})
+        row.update({'package': pkg, 'prescription': PACKAGE_PRESCRIPTION[pkg], 'alert': alert, 'rain_windows': windows_txt, 'mult_source': m_source})
         meta.append(row)
 
     out = pd.concat([out, pd.DataFrame(meta, index=out.index)], axis=1)
@@ -601,56 +722,96 @@ def apply_climate(df, df_w_daily, df_w_hourly, w_dict, city_name):
 # =====================================================================
 # MODULE 3.5: WEATHER DICTIONARY AUTO-CALIBRATION (SILENT, IDEMPOTENT)
 # =====================================================================
+CALIB_CATCHUP_DAYS = 14   # on every visit Nova looks back this many days for rain days it has not learned from yet
+
+
+def _calib_done(log, city_name):
+    v = log.get(city_name)
+    if isinstance(v, dict): return set(v.get('done', []))
+    if isinstance(v, str): return {v}       # legacy log: only the last calibrated day
+    return set()
+
+
+def _weekday_baseline(df_historical, day, df_w_daily, metric):
+    """Mean of the same weekday in the previous 4 weeks, skipping days that also had rain. None if fewer than 2 usable days."""
+    rainy = set()
+    if df_w_daily is not None and not df_w_daily.empty:
+        rainy = set(df_w_daily.loc[df_w_daily['intensity_cat'].map(rain_level) != 'none', 'date'])
+    vals = []
+    for k in range(1, 5):
+        d = day - timedelta(days=7 * k)
+        if d in rainy: continue
+        row = df_historical[df_historical['date'] == d]
+        if not row.empty and pd.notna(row[f'{metric}_real'].iloc[0]) and row[f'{metric}_real'].iloc[0] > 0:
+            vals.append(float(row[f'{metric}_real'].iloc[0]))
+    return float(np.mean(vals)) if len(vals) >= 2 else None
+
+
 def auto_calibrate_weather_dict(city_name, df_historical, ledger_city, df_w_daily):
     """
-    If it rained yesterday, compares the real multiplier (REAL_TABLE / raw ARIMA base) with the JSON and nudges it:
+    Catch-up learning. Every time a city is opened Nova checks the last CALIB_CATCHUP_DAYS days, finds the days that rained,
+    classifies them with the dictionary's own buckets (the weather feed already uses them) and nudges the matching cell:
         new = 0.8 * dict + 0.2 * real        (a null / missing dict value is treated as 1.0)
-    Runs once per city per day. Never raises and never blocks the UI. Returns a message when something changed.
+    real = actual / base, where base is what ARIMA predicted for that day when it is in the ledger, otherwise the same weekday's
+    average over the previous dry weeks. Each day is learned once (the log keeps the processed days). Never raises, never blocks the UI.
+    NOTE: both JSON files (dictionary + log) must survive restarts for this to accumulate (see load_json / save_json).
     """
     try:
-        if df_w_daily.empty: return None
-        yesterday = today_mx() - timedelta(days=1)
-        y_str = yesterday.strftime('%Y-%m-%d')
+        if df_w_daily is None or df_w_daily.empty: return None
+        today = today_mx()
         log = load_json(CALIB_LOG_FILE)
-        if log.get(city_name) == y_str: return None
-
-        w_row = df_w_daily[df_w_daily['date'] == yesterday]
-        if w_row.empty: return None
-        intensity, flood = w_row['intensity_cat'].iloc[0], w_row['flood_risk'].iloc[0]
-        if rain_level(intensity) == 'none': return None
-
-        h_row = df_historical[df_historical['date'] == yesterday]
-        base = ledger_city.get(y_str)
-        if h_row.empty or not base: return None
+        done = _calib_done(log, city_name)
+        days = [d for d in pd.date_range(today - timedelta(days=CALIB_CATCHUP_DAYS), today - timedelta(days=1)) if d.strftime('%Y-%m-%d') not in done]
+        if not days: return None
 
         w_dict = load_weather_dict()
         city_block = get_city_weather_block(w_dict, city_name)  # Strict: never calibrate one city with another city's data
-        node = resolve_weather_node(city_block, intensity, flood) if city_block else None
-        if node is None: return None
+        changes, learned_days = [], []
+        newly_done = set()
+        for d in days:
+            d_str = d.strftime('%Y-%m-%d')
+            w_row = df_w_daily[df_w_daily['date'] == d]
+            if w_row.empty: continue
+            intensity, flood = w_row['intensity_cat'].iloc[0], w_row['flood_risk'].iloc[0]
+            if rain_level(intensity) == 'none':
+                newly_done.add(d_str); continue
+            h_row = df_historical[df_historical['date'] == d]
+            if h_row.empty: continue            # data has not landed yet: try again on the next visit
+            newly_done.add(d_str)
+            node = resolve_weather_node(city_block, intensity, flood) if city_block else None
+            if node is None: continue
+            src = mult_source(node)
+            snap = ledger_city.get(d_str) or {}
+            basis = 'ARIMA memory' if snap else 'weekday baseline'
+            day_changes = []
+            for m in FUNNEL_METRICS:
+                real_val = h_row[f'{m}_real'].iloc[0]
+                base_val = snap.get(m) or _weekday_baseline(df_historical, d, df_w_daily, m)
+                if pd.isna(real_val) or not base_val or base_val <= 0: continue
+                real_mult = float(real_val) / float(base_val)
+                if not (CALIB_REAL_BOUNDS[0] <= real_mult <= CALIB_REAL_BOUNDS[1]): continue
+                key = next((a for a in MULT_ALIASES[m] if a in src), MULT_ALIASES[m][0])
+                old = safe_mult(src.get(key))  # null -> 1.0
+                if abs(real_mult - old) <= CALIB_MIN_DIFF: continue
+                new = round(CALIB_KEEP * old + CALIB_LEARN * real_mult, 4)
+                src[key] = new
+                day_changes.append(f"{METRIC_LABELS[m]} {old:.3f} to {new:.3f}")
+            if day_changes:
+                changes += day_changes
+                learned_days.append({'rain_day': d_str, 'bucket': f"{intensity} / flood {flood}", 'basis': basis, 'changes': day_changes})
 
-        src = mult_source(node)
-        changes = []
-        for m in FUNNEL_METRICS:
-            real_val, base_val = h_row[f'{m}_real'].iloc[0], base.get(m)
-            if pd.isna(real_val) or not base_val or base_val <= 0: continue
-            real_mult = float(real_val) / float(base_val)
-            if not (CALIB_REAL_BOUNDS[0] <= real_mult <= CALIB_REAL_BOUNDS[1]): continue
-
-            key = next((a for a in MULT_ALIASES[m] if a in src), MULT_ALIASES[m][0])
-            old = safe_mult(src.get(key))  # null -> 1.0
-            if abs(real_mult - old) <= CALIB_MIN_DIFF: continue
-            new = round(CALIB_KEEP * old + CALIB_LEARN * real_mult, 4)
-            src[key] = new
-            changes.append(f"{METRIC_LABELS[m]} {old:.3f} to {new:.3f}")
-
-        log[city_name] = y_str
-        if changes:
+        if not newly_done: return None
+        log[city_name] = {'done': sorted(done | newly_done)[-60:]}
+        if learned_days:
             save_json(WEATHER_DICT_FILE, w_dict)
             audit = log.get('_changes', [])
-            audit.append({'city': city_name, 'rain_day': y_str, 'bucket': f"{intensity} / flood {flood}", 'changes': changes})
-            log['_changes'] = audit[-50:]
+            audit += [{'city': city_name, **x} for x in learned_days]
+            log['_changes'] = audit[-100:]
         save_json(CALIB_LOG_FILE, log)
-        return (f"Weather dictionary auto-calibrated for {city_name} ({intensity}, flood {flood}): " + ", ".join(changes)) if changes else None
+        if not learned_days: return None
+        last = learned_days[-1]
+        return (f"Weather dictionary auto-calibrated for {city_name}: learned from {len(learned_days)} rainy day(s), "
+                f"latest {last['rain_day']} ({last['bucket']}): " + ", ".join(last['changes']))
     except Exception:
         return None
 
@@ -866,7 +1027,8 @@ def build_adjustment_flags(df_clim, df_w_daily, climate_on):
         if climate_on and pkg == 6:
             icons.append("🚨"); tips.append("Package 6 safety lock")
         elif climate_on and any(abs(r[f'mult_{m}'] - 1.0) > 1e-9 for m in FUNNEL_METRICS):
-            icons.append("🌧️"); tips.append(f"Climate adjustment applied to the forecast ({r['intensity_cat']}" + (f", package {pkg}" if pkg else "") + ")")
+            icons.append("🌧️"); tips.append(f"Climate adjustment applied to the forecast ({r['intensity_cat']}" + (f", package {pkg}" if pkg else "")
+                                              + ("" if r.get('mult_source', SRC_DICT) == SRC_DICT else f"; borrowed from {r['mult_source']}") + ")")
         elif climate_on and pkg >= 2:
             icons.append("☔"); tips.append(f"Rain package {pkg}: budget action only, the forecast is unchanged (no multipliers for this rain bucket)")
         if bool(r.get('has_anomaly', False)):
@@ -916,7 +1078,7 @@ def build_forecast_pipeline(params, df_historical, df_arima_all, df_w_daily, df_
     # 3) Climate tree (the dictionary is auto-calibrated first so today's run already uses the learning)
     calib_msg = auto_calibrate_weather_dict(city_name, df_historical, ledger_city, df_w_daily)
     if params.get('clima', True) and not df_w_daily.empty:
-        df_clim = apply_climate(df_anom, df_w_daily, df_w_hourly, load_weather_dict(), city_name)
+        df_clim = apply_climate(df_anom, df_w_daily, df_w_hourly, load_weather_dict(), city_name, params.get('fill_gaps', True))
     else:
         df_clim = add_default_climate_cols(df_anom)
 
@@ -975,6 +1137,22 @@ PACKAGE_STANCE = {
     6: dict(drv=0.00, pax=0.30, next_drv=1.20, next_pax=1.20, note="Safety lock: no driver incentives while the hazard lasts, passenger spend at 30%, recover with +20% the next day."),
     7: dict(drv=1.05, pax=1.00, next_drv=1.00, next_pax=1.00, note="Heavy rain outside peaks: hold and monitor (DRV +5%)."),
 }
+
+
+# Plain names used EVERYWHERE the UI talks about a weather package (alerts, plan table, explanations). "P0-P3" is reserved for city priority.
+PACKAGE_NAME = {2: "Active rain", 3: "Active storm", 4: "Workday night storm", 5: "Weekend night storm", 6: "Safety lock", 7: "Heavy rain off-peak"}
+PACKAGE_ACTION = {
+    2: "controlled driver investment (drivers worth +10%)",
+    3: "push supply during the storm, both channels +15% the next day",
+    4: "hold back tonight and move value to tomorrow's morning peak",
+    5: "late-night driver push (+20%)",
+    6: "no driver incentives, passenger spend at 30%, recover the next day",
+    7: "hold and monitor (drivers +5%)",
+}
+
+
+def package_name(pkg):
+    return PACKAGE_NAME.get(int(pkg), "")
 
 
 # ---------------------------------------------------------------- unit boundary
@@ -1426,6 +1604,32 @@ def explain_day(r, summary, weather_txt="", pkg_prescription=""):
     return "\n\n".join(lines)
 
 
+def explain_day_brief(r, summary, weather_txt=""):
+    """The short version for the city owner: weather, where the opportunity is, what Nova decided. Three lines at most (plus the forced-split note)."""
+    pkg = int(r['package'])
+    lines = []
+    if pkg >= 2:
+        lines.append(f"**Weather:** {PACKAGE_NAME[pkg]}" + (f" ({weather_txt})" if weather_txt else "") + f". Nova: {PACKAGE_ACTION[pkg]}.")
+    elif r['carried']:
+        lines.append("**Weather:** yesterday's weather event passes value to this day (recovery / time-shift).")
+
+    drv_trips, pax_trips = r['T'] * r['g_drv'], r['T'] * r['g_pax']
+    drv_why = f"CR {r['c']*100:.1f}% vs {r['c_ref']*100:.1f}% healthy" + (f", supply {-r['leak_sdr']*100:.0f}% vs norm" if r['leak_sdr'] > 0.05 else "")
+    pax_why = f"ECR {r['e']*100:.1f}% vs {r['e_ref']*100:.1f}% healthy" + (f", eyeballs {-r['leak_eb']*100:.0f}% vs norm" if r['leak_eb'] > 0.05 else "")
+    if drv_trips >= pax_trips:
+        main, main_n, main_why, other, other_n = "drivers", drv_trips, drv_why, "passengers", pax_trips
+    else:
+        main, main_n, main_why, other, other_n = "passengers", pax_trips, pax_why, "drivers", drv_trips
+    lines.append(f"**Where the opportunity is:** {main} (~{main_n:,.0f} recoverable trips; {main_why}). {other.capitalize()}: ~{other_n:,.0f}.")
+
+    lines.append(f"**Nova's call:** ${r['x_total']:,.0f} ({r['share']*100:.0f}% of the remaining budget), split "
+                 f"{r['split_drv']*100:.0f}/{(1-r['split_drv'])*100:.0f} DRV/PAX = {r['burn_pct']:.2f}% of the day's GMV"
+                 + (f", about +{r['gain']:,.0f} trips." if r['gain'] > 0 else "."))
+    if summary.get('force_drv_share') is not None:
+        lines.append(f"**Locked by you:** the week follows {summary['force_drv_share']*100:.0f}/{(1-summary['force_drv_share'])*100:.0f}; Nova only shapes the days.")
+    return "\n\n".join(lines)
+
+
 def week_insight(summary):
     """One short paragraph for the city owner."""
     s = summary
@@ -1446,6 +1650,454 @@ def week_insight(summary):
     if s['calls_target'] > 0:
         bits.append(f"Calls target {s['calls_target']:,.0f} vs projection {s['weekly_calls']:,.0f} scales passenger value x{s['calls_mult']:.2f}.")
     return " ".join(bits)
+# =====================================================================
+# MODULE 12: MX PORTFOLIO (management view: every city, no budget)
+# ---------------------------------------------------------------------
+# Every city runs through the SAME forecast pipeline as the city view (ARIMA > bias > anomalies > climate), then each city is
+# classified from WEEKLY totals of trips, calls, eyeballs and supply hours:
+#   P0 Critical : any metric drops >= 10% WoW (projected), or declines for 4 weeks in a row (the selected week completes the 4th)
+#   P1 Warning  : any metric drops >= 5% WoW, declines 3 weeks in a row, or shrinks >= 2% per week over the last 4 weeks
+#   P3 Growth   : trips grow >= 3% WoW and no metric is falling (>= -2%)
+#   P2 Stable   : everything else
+# =====================================================================
+VIEW_CITY, VIEW_PORT = "🏙️ City", "🇲🇽 Portfolio"
+PORT_METRICS = ['trips', 'calls', 'eyeballs', 'tsh']
+PORT_LABELS = {'trips': 'Trips', 'calls': 'Calls', 'eyeballs': 'Eyeballs', 'tsh': 'Supply hours'}
+PORT_DECLINE_EPS = -0.005     # a weekly change below -0.5% counts as a decline
+PORT_BIG_DROP = -0.10
+PORT_SOFT_DROP = -0.05
+PORT_STREAK_P0 = 4
+PORT_STREAK_P1 = 3
+PORT_SLOPE_P1 = -0.02         # geometric weekly change over the last 3 transitions
+PORT_GROWTH = 0.03
+PORT_GROWTH_FLOOR = -0.02
+PRIORITY_NAME = {'P0': 'P0 Critical', 'P1': 'P1 Warning', 'P2': 'P2 Stable', 'P3': 'P3 Growth', 'NA': 'No data'}
+PRIORITY_RANK = {'P0': 0, 'P1': 1, 'P2': 2, 'P3': 3, 'NA': 4}
+PRIORITY_COLOR = {'P0': '#DC143C', 'P1': '#FFA500', 'P2': '#6B7280', 'P3': '#2EA043', 'NA': '#9CA3AF'}
+
+
+def daily_series(df_hist, df_fc):
+    """Actuals followed by the adjusted forecast, one row per date, columns without suffix (trips, calls, eyeballs, tsh, gmv)."""
+    cols = ['trips', 'calls', 'eyeballs', 'tsh', 'gmv']
+    h = df_hist[['date'] + [f'{c}_real' for c in cols]].copy()
+    h.columns = ['date'] + cols
+    f = df_fc[['date'] + [f'{c}_forecast' for c in cols]].copy()
+    f.columns = ['date'] + cols
+    f = f[f['date'] > h['date'].max()]
+    out = pd.concat([h, f], ignore_index=True).drop_duplicates('date', keep='first').sort_values('date').reset_index(drop=True)
+    out['date'] = pd.to_datetime(out['date'])
+    return out
+
+
+def weekly_totals(daily):
+    """Monday-keyed weekly sums and the number of days behind each week."""
+    d = daily.copy()
+    d['week'] = d['date'] - pd.to_timedelta(d['date'].dt.dayofweek, unit='D')
+    g = d.groupby('week').agg(trips=('trips', 'sum'), calls=('calls', 'sum'), eyeballs=('eyeballs', 'sum'),
+                              tsh=('tsh', 'sum'), gmv=('gmv', 'sum'), n_days=('date', 'count'))
+    return g
+
+
+def _ord(n):
+    return {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
+
+
+def classify_city(weekly, sel_monday, sel_has_forecast=False):
+    """
+    Priority of one city (or of the whole region) for the selected week. weekly = weekly_totals(...).
+    Needs the selected week complete (7 days). Weeks before it that are incomplete simply break the streak.
+    """
+    sel = pd.Timestamp(sel_monday)
+    weeks = [sel - timedelta(days=7 * k) for k in range(4, -1, -1)]      # oldest ... selected
+    full = {w: (w in weekly.index and int(weekly.loc[w, 'n_days']) >= 7) for w in weeks}
+    res = {'priority': 'NA', 'reasons': [], 'metrics': {}, 'week_full': full[sel]}
+    if not full[sel]:
+        res['reasons'] = ["The data + forecast do not cover the whole selected week."]
+        return res
+
+    tag = " (incl. forecast)" if sel_has_forecast else ""
+    p0, p1, growth_ok, falling = [], [], False, False
+    for m in PORT_METRICS:
+        changes = []
+        for a, b in zip(weeks[:-1], weeks[1:]):
+            if full[a] and full[b] and weekly.loc[a, m] > 0:
+                changes.append(float(weekly.loc[b, m] / weekly.loc[a, m] - 1.0))
+            else:
+                changes.append(None)
+        wow = changes[-1]
+        streak = 0
+        for c in reversed(changes):
+            if c is not None and c <= PORT_DECLINE_EPS: streak += 1
+            else: break
+        slope = None
+        if full[weeks[1]] and weekly.loc[weeks[1], m] > 0:
+            slope = float((weekly.loc[sel, m] / weekly.loc[weeks[1], m]) ** (1 / 3) - 1.0)
+        res['metrics'][m] = {'value': float(weekly.loc[sel, m]), 'wow': wow, 'streak': streak, 'slope': slope, 'changes': changes}
+        if wow is None:
+            continue
+        label = PORT_LABELS[m]
+        if streak >= PORT_STREAK_P0:
+            p0.append((3, f"{label}: {_ord(streak)} straight weekly decline, {wow * 100:+.1f}% this week{tag}"))
+        if wow <= PORT_BIG_DROP:
+            p0.append((4, f"{label}: {wow * 100:+.1f}% WoW{tag}"))
+        if streak == PORT_STREAK_P1:
+            p1.append((3, f"{label}: {_ord(streak)} straight weekly decline, {wow * 100:+.1f}% this week{tag}"))
+        if PORT_BIG_DROP < wow <= PORT_SOFT_DROP:
+            p1.append((2, f"{label}: {wow * 100:+.1f}% WoW{tag}"))
+        if slope is not None and slope <= PORT_SLOPE_P1 and streak < PORT_STREAK_P1:
+            p1.append((1, f"{label}: shrinking {abs(slope) * 100:.1f}% per week over 4 weeks{tag}"))
+        if wow <= PORT_GROWTH_FLOOR:
+            falling = True
+
+    trips_wow = res['metrics']['trips']['wow']
+    growth_ok = trips_wow is not None and trips_wow >= PORT_GROWTH and not falling
+    if p0:
+        res['priority'], res['reasons'] = 'P0', [t for _, t in sorted(set(p0), key=lambda x: -x[0])]
+    elif p1:
+        res['priority'], res['reasons'] = 'P1', [t for _, t in sorted(set(p1), key=lambda x: -x[0])]
+    elif growth_ok:
+        res['priority'], res['reasons'] = 'P3', [f"Trips {trips_wow * 100:+.1f}% WoW and no metric is falling{tag}"]
+    else:
+        res['priority'], res['reasons'] = 'P2', ["No sustained decline and no sharp drop"]
+    return res
+
+
+def region_daily(city_results, which):
+    """Sum of every city per date, keeping only dates where ALL cities have data (no artificial dips). which: 'real' or 'forecast'."""
+    frames = []
+    for r in city_results.values():
+        f = r['df_hist'] if which == 'real' else r['df_clim']
+        sfx = '_real' if which == 'real' else '_forecast'
+        cols = ['trips', 'calls', 'eyeballs', 'tsh', 'gmv']
+        x = f[['date'] + [c + sfx for c in cols]].copy()
+        if which == 'forecast':
+            x['has_anomaly'] = f['has_anomaly'].astype(bool) if 'has_anomaly' in f.columns else False
+        frames.append(x)
+    if not frames:
+        return pd.DataFrame()
+    allf = pd.concat(frames, ignore_index=True)
+    agg = {c: 'sum' for c in allf.columns if c not in ('date', 'has_anomaly')}
+    if 'has_anomaly' in allf.columns:
+        agg['has_anomaly'] = 'max'
+    g = allf.groupby('date').agg(agg)
+    counts = allf.groupby('date').size()
+    g = g[counts == len(frames)].reset_index()
+    sfx = '_real' if which == 'real' else '_forecast'
+    g[f'cr{sfx}'] = g[f'trips{sfx}'] / g[f'calls{sfx}'].replace(0, np.nan) * 100
+    g[f'ecr{sfx}'] = g[f'calls{sfx}'] / g[f'eyeballs{sfx}'].replace(0, np.nan) * 100
+    g[f'sdr{sfx}'] = g[f'tsh{sfx}'] / g[f'eyeballs{sfx}'].replace(0, np.nan)
+    g[f'etr{sfx}'] = g[f'trips{sfx}'] / g[f'eyeballs{sfx}'].replace(0, np.nan) * 100
+    return g
+
+
+def weather_watch(res, week_start, week_end):
+    """Short text with the important weather events (storms, safety lock, heat) of the selected week for one city."""
+    ev = week_events(res['df_clim'], res['df_w_daily'], [], week_start, week_end, today_mx(), True, True)
+    return ", ".join(f"{e['text']} {e['date'].strftime('%a')}" for e in ev
+                     if e['kind'] == 'heat' or (e['kind'] == 'weather' and e['pkg'] in (3, 4, 5, 6)))
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def compute_portfolio(use_clima, use_anoms, fill_gaps, stamp):
+    """Runs the forecast pipeline for every city. `stamp` only busts the cache when anomalies / dictionary change."""
+    params_base = {'clima': use_clima, 'use_anomalies': use_anoms, 'fill_gaps': fill_gaps}
+    id_to_name = {v: k for k, v in CITIES_DICT.items()}
+    errors, data = {}, {}
+    try:
+        data = get_portfolio_data()
+    except Exception as e:
+        errors['_bulk'] = str(e)
+    results = {}
+    for name, cid in CITIES_DICT.items():
+        try:
+            if cid in data:
+                df_h, df_a = data[cid]
+            else:
+                df_h, df_a = get_city_data(cid)      # bulk query missed this city (or failed): ask for it alone
+            if df_h.empty or df_a.empty:
+                raise ValueError("no data")
+            lat, lon = COORDINATES[name]
+            dw, dh = get_weather_forecast(lat, lon, name)
+            ctx = build_forecast_pipeline({**params_base, 'city_name': name, 'city': cid}, df_h, df_a, dw, dh)
+            if ctx is None:
+                raise ValueError("forecast has no future days")
+            results[name] = {'city_id': cid, 'df_hist': df_h, 'df_clim': ctx['df_clim'], 'df_org': ctx['df_org'], 'df_anom': ctx['df_anom'],
+                             'df_w_daily': dw, 'daily': daily_series(df_h, ctx['df_clim']), 'last_real': df_h['date'].max()}
+        except Exception as e:
+            errors[name] = str(e)
+    errors.pop('_bulk', None) if results else None
+    return {'cities': results, 'errors': errors}
+
+
+def portfolio_rows(pf, week):
+    """Priority table: one row per city + the region itself, for the selected week."""
+    mon, sun = week_bounds(week)
+    rows = []
+    for name, r in pf['cities'].items():
+        weekly = weekly_totals(r['daily'])
+        cl = classify_city(weekly, mon, sel_has_forecast=bool(r['last_real'] < sun))
+        cl.update(city=name, weekly=weekly, watch=weather_watch(r, mon, sun))
+        rows.append(cl)
+    tot_trips = sum(x['metrics']['trips']['value'] for x in rows if x['priority'] != 'NA') or 1.0
+    for x in rows:
+        x['trips_share'] = x['metrics']['trips']['value'] / tot_trips if x['priority'] != 'NA' else 0.0
+    rows.sort(key=lambda x: (PRIORITY_RANK[x['priority']], -x['metrics'].get('trips', {}).get('value', 0.0)))
+    return rows
+
+
+def region_view(pf, week):
+    """Region-wide frames for the KPI cards / charts + the region's own priority."""
+    cities = pf['cities']
+    mon, sun = week_bounds(week)
+    h = region_daily(cities, 'real')
+    f_clim = region_daily(cities, 'forecast')
+    f_org = region_daily({k: {**v, 'df_clim': v['df_org']} for k, v in cities.items()}, 'forecast')
+    f_anom = region_daily({k: {**v, 'df_clim': v['df_anom']} for k, v in cities.items()}, 'forecast')
+    daily = daily_series(h.rename(columns={}), f_clim.rename(columns={})) if not h.empty and not f_clim.empty else pd.DataFrame()
+    cl = None
+    if not daily.empty:
+        cl = classify_city(weekly_totals(daily), mon, sel_has_forecast=bool(h['date'].max() < sun))
+    return {'hist': h, 'clim': f_clim, 'org': f_org, 'anom': f_anom, 'daily': daily, 'class': cl}
+
+
+# ------------------------------------------------------------------ rendering helpers
+def _tint(x, scale=0.15):
+    if x is None: return "transparent"
+    a = min(0.5, abs(x) / scale * 0.5)
+    return f"rgba(46,160,67,{a:.2f})" if x >= 0 else f"rgba(220,20,60,{a:.2f})"
+
+
+def wow_span(x):
+    if x is None: return "<span style='opacity:.5'>n/a</span>"
+    return f"<span style='display:inline-block;min-width:3.6em;text-align:center;padding:1px 6px;border-radius:4px;background:{_tint(x)}'>{x * 100:+.1f}%</span>"
+
+
+def arrows(changes):
+    """Last weekly changes, oldest to newest (the last arrow is the selected week)."""
+    out = []
+    for c in changes:
+        if c is None: out.append("<span style='opacity:.35'>·</span>")
+        elif c <= PORT_DECLINE_EPS: out.append("<span style='color:#DC143C'>▼</span>")
+        elif c >= -PORT_DECLINE_EPS: out.append("<span style='color:#2EA043'>▲</span>")
+        else: out.append("<span style='opacity:.5'>▬</span>")
+    tip = " | ".join("n/a" if c is None else f"{c * 100:+.1f}%" for c in changes)
+    return f"<span title='{tip}' style='letter-spacing:1px'>{''.join(out)}</span>"
+
+
+def priority_badge(p):
+    return f"<b style='color:{PRIORITY_COLOR[p]}'>{PRIORITY_NAME[p]}</b>"
+
+
+def attention_table(rows):
+    body = []
+    for x in rows:
+        m = x['metrics']
+        body.append([f"<b>{esc(x['city'])}</b>", "<br>".join(esc(t) for t in x['reasons']),
+                     *[wow_span(m[k]['wow']) for k in PORT_METRICS], f"{x['trips_share'] * 100:.1f}%", esc(x['watch'] or '-')])
+    return html_table(["City", "Why", "Trips", "Calls", "Eyeballs", "Supply hrs", "% of MX trips", "Weather watch"], body)
+
+
+def render_priority_alerts(rows, outlook=None):
+    st.subheader("🚨 2. Cities requiring attention")
+    if outlook:
+        st.markdown(f'<div class="nova-alert {outlook["level"]}"><div class="nova-alert-title">{outlook["title"]}</div><div class="nova-alert-body">{outlook["body"]}</div></div>', unsafe_allow_html=True)
+    groups = {p: [x for x in rows if x['priority'] == p] for p in PRIORITY_NAME}
+    if not groups['P0'] and not groups['P1']:
+        st.markdown('<div class="nova-alert ok"><div class="nova-alert-title">✅ No city needs attention</div>'
+                    '<div class="nova-alert-body">No metric is dropping sharply or has declined for 3+ weeks in a row.</div></div>', unsafe_allow_html=True)
+    for p, level, icon in (('P0', 'critical', '🔴'), ('P1', 'warning', '🟠')):
+        if groups[p]:
+            share = sum(x['trips_share'] for x in groups[p]) * 100
+            st.markdown(f'<div class="nova-alert {level}"><div class="nova-alert-title">{icon} {PRIORITY_NAME[p]}: {len(groups[p])} city(ies), '
+                        f'{share:.0f}% of MX trips</div><div class="nova-alert-body">{attention_table(groups[p])}</div></div>', unsafe_allow_html=True)
+    for p, level in (('P2', 'info'), ('P3', 'ok')):
+        if groups[p]:
+            names = ", ".join(x['city'] for x in groups[p])
+            st.markdown(f'<div class="nova-alert {level}"><div class="nova-alert-title">{PRIORITY_NAME[p]}: {len(groups[p])} city(ies)</div>'
+                        f'<div class="nova-alert-body">{esc(names)}</div></div>', unsafe_allow_html=True)
+            with st.expander(f"{PRIORITY_NAME[p]} details"):
+                st.markdown(attention_table(groups[p]), unsafe_allow_html=True)
+    if groups['NA']:
+        st.markdown(f'<div class="nova-alert info"><div class="nova-alert-title">⚪ Not classified: {len(groups["NA"])} city(ies)</div>'
+                    f'<div class="nova-alert-body">{esc(", ".join(x["city"] for x in groups["NA"]))}: the data + forecast do not cover the whole selected week.</div></div>',
+                    unsafe_allow_html=True)
+
+
+def portfolio_matrix(rows):
+    body = []
+    for x in rows:
+        m = x['metrics']
+        cells = [f"<b>{esc(x['city'])}</b>", priority_badge(x['priority'])]
+        if x['priority'] == 'NA':
+            cells += ["-"] * 4
+        else:
+            for k in PORT_METRICS:
+                cells.append(f"{wow_span(m[k]['wow'])} {arrows(m[k]['changes'])}<br><small style='opacity:.7'>{m[k]['value']:,.0f}</small>")
+        body.append(cells)
+    return html_table(["City", "Priority", "Trips", "Calls", "Eyeballs", "Supply hrs"], body)
+
+
+def next_week_outlook(pf, week, rows):
+    """For the ONGOING week only: cities with important events next week, or that would be P0/P1 next week. None when quiet."""
+    win = week_window(week)
+    if not win['ongoing']:
+        return None
+    now_rank = {x['city']: PRIORITY_RANK[x['priority']] for x in rows}
+    lines, worst = [], 'warning'
+    for name, r in pf['cities'].items():
+        dfc = r['df_clim']
+        anoms = [{'date': d} for d in dfc.loc[dfc['has_anomaly'].astype(bool), 'date']] if 'has_anomaly' in dfc.columns else []
+        ev = week_events(dfc, r['df_w_daily'], anoms, win['next_mon'], win['next_sun'], today_mx(), True, r['df_w_daily'] is not None and not r['df_w_daily'].empty)
+        ev = [e for e in ev if LEVEL_RANK[e['level']] >= LEVEL_RANK['warning'] and (e['kind'] != 'weather' or e['pkg'] in (3, 4, 5, 6))]
+        nxt = classify_city(weekly_totals(r['daily']), win['next_mon'], sel_has_forecast=True)
+        worse = nxt['priority'] in ('P0', 'P1') and PRIORITY_RANK[nxt['priority']] < now_rank.get(name, 9)
+        if not ev and not worse:
+            continue
+        bits = [f"{e['text']} {e['date'].strftime('%a')}" for e in ev]
+        if worse:
+            bits.append(f"may move to <b>{PRIORITY_NAME[nxt['priority']]}</b>")
+        lines.append(f"<b>{esc(name)}</b>: " + ", ".join(bits))
+    if not lines:
+        return None
+    return {'level': worst, 'title': f"📅 Next week (W{win['next_week']}): {len(lines)} city(ies) to watch",
+            'body': "<br>".join(lines) + f"<br><span style='opacity:.8'>Select week {win['next_week']} in 🏙️ City &amp; Week to see it in full.</span>"}
+
+
+def portfolio_allocation(pf, week, ref_budget_pct):
+    """Same engine and same inputs as the city view (forecast signal, no targets, Safe Capping on, past burn from Burn SoT) at one reference budget."""
+    out = {}
+    for name, r in pf['cities'].items():
+        params = dict(city=r['city_id'], city_name=name, week=week, budget=float(ref_budget_pct), target_calls=0.0, target_cr=0.0,
+                      signal='forecast', force=False, split=None, safe_mode=True, manual_burn=False, manual_past={})
+        try:
+            m_t = week_slice(unify_data(r['df_hist'], r['df_clim']), week)
+            out[name] = plan_allocation(params, r['df_clim'], r['df_hist'], m_t, week)
+        except Exception as e:
+            out[name] = {'status': 'error', 'error': str(e)}
+    return out
+
+
+ALLOC_STATUS_TXT = {'no_gmv': "no GMV yet", 'ended': "week ended", 'spent': "budget already spent", 'empty': "nothing to place", 'error': "n/a"}
+
+
+def focus_label(macro_drv):
+    return "supply-led" if macro_drv >= 0.6 else ("demand-led" if macro_drv <= 0.4 else "balanced")
+
+
+def allocation_table(rows, alloc, week):
+    mon, _ = week_bounds(week)
+    days = [mon + timedelta(days=i) for i in range(7)]
+    body = []
+    for x in rows:
+        a = alloc.get(x['city'], {'status': 'error'})
+        cells = [f"<b>{esc(x['city'])}</b>", priority_badge(x['priority'])]
+        if a.get('status') != 'ok':
+            cells += [f"<span style='opacity:.6'>{ALLOC_STATUS_TXT.get(a.get('status'), 'n/a')}</span>"] + ["-"] * 7
+            body.append(cells)
+            continue
+        d, s, past = a['res']['days'], a['res']['summary'], a['past']
+        extra = []
+        if not past.empty and float(past['total_usd'].sum()) > 0:
+            drv_all, pax_all = float(past['drv_usd'].sum()) + s['drv_total'], float(past['pax_usd'].sum()) + s['pax_total']
+            extra.append(f"whole week {drv_all / (drv_all + pax_all) * 100:.0f}/{pax_all / (drv_all + pax_all) * 100:.0f}")
+        cells.append(f"<b>{s['macro_drv'] * 100:.0f}% / {(1 - s['macro_drv']) * 100:.0f}%</b><br><small style='opacity:.7'>{' · '.join([focus_label(s['macro_drv'])] + extra)}</small>")
+        plan_by_day = {pd.Timestamp(r['date']): r for _, r in d.iterrows()}
+        past_by_day = {pd.Timestamp(r['date']): r for _, r in past.iterrows()} if not past.empty else {}
+        for day in days:
+            if day in plan_by_day:
+                r = plan_by_day[day]
+                cells.append(f"<b>{r['split_drv'] * 100:.0f}/{(1 - r['split_drv']) * 100:.0f}</b><br><small style='opacity:.7'>{r['burn_pct']:.2f}%</small>" if r['x_total'] > 0 else "-")
+            elif day in past_by_day:
+                r = past_by_day[day]
+                t = r['total_usd']
+                cells.append(f"<span style='opacity:.5'>{r['drv_usd'] / t * 100:.0f}/{r['pax_usd'] / t * 100:.0f}<br><small>played</small></span>" if t > 0 else "<span style='opacity:.4'>played</span>")
+            else:
+                cells.append("-")
+        body.append(cells)
+    return html_table(["City", "Priority", "Weekly split DRV / PAX"] + [d.strftime('%a %d') for d in days], body)
+
+
+def _open_city(city):
+    st.session_state['cc_city'] = city
+    st.session_state['nova_view'] = VIEW_CITY
+    ref = float(st.session_state.get('pf_ref_budget', 0.0) or 0.0)
+    if ref > 0:
+        st.session_state['cc_budget'] = ref      # same budget -> the city view shows exactly the plan of the portfolio table
+
+
+def render_portfolio(params):
+    w = params['week']
+    mon, sun = week_bounds(w)
+    stamp = (os.path.getmtime(OVERRIDES_FILE) if os.path.exists(OVERRIDES_FILE) else 0, os.path.getmtime(WEATHER_DICT_FILE) if os.path.exists(WEATHER_DICT_FILE) else 0)
+    with st.spinner("Running the forecast pipeline for every city (first load takes a moment)..."):
+        pf = compute_portfolio(bool(params['clima']), bool(params.get('use_anomalies', True)), bool(params.get('fill_gaps', True)), stamp)
+    cities = pf['cities']
+    if not cities:
+        st.error("⚠️ No city could be loaded. " + "; ".join(f"{k}: {v}" for k, v in list(pf['errors'].items())[:3]))
+        return
+    if pf['errors']:
+        st.warning("Some cities could not be loaded and are left out: " + ", ".join(f"{k} ({v})" for k, v in pf['errors'].items()))
+
+    rows = portfolio_rows(pf, w)
+    reg = region_view(pf, w)
+    if reg['daily'].empty:
+        st.error("⚠️ The cities have no common dates, so the MX totals cannot be built.")
+        return
+    daily = reg['daily']
+    m_t = week_slice(daily, w)
+    m_1 = daily[(daily['date'] >= mon - timedelta(days=7)) & (daily['date'] < mon)]
+
+    # 1. Region cards
+    render_kpi_cards(m_t, m_1, w, f"MX, {len(cities)} cities")
+    counts = {p: [x for x in rows if x['priority'] == p] for p in ('P0', 'P1', 'P2', 'P3')}
+    c = st.columns(4)
+    for col, p in zip(c, ('P0', 'P1', 'P2', 'P3')):
+        share = sum(x['trips_share'] for x in counts[p]) * 100
+        col.metric(PRIORITY_NAME[p], f"{len(counts[p])} cities", f"{share:.0f}% of MX trips", delta_color="off")
+    rc = reg['class']
+    if rc is not None and rc['priority'] != 'NA':
+        st.caption(f"Region as a whole: {PRIORITY_NAME[rc['priority']]}. " + "; ".join(rc['reasons']) + ".")
+
+    # 2. Cities requiring attention (+ a slim heads-up about next week while the current week is ongoing)
+    render_priority_alerts(rows, next_week_outlook(pf, w, rows))
+
+    # 3. Matrix
+    st.subheader("🗺️ 3. Portfolio matrix")
+    st.caption(f"Selected week W{w} ({mon.strftime('%b %d')} to {sun.strftime('%b %d')}), totals include the forecast for days not played yet. "
+               "Arrows: weekly change over the last 4 weeks, oldest to newest (the last arrow is the selected week). Hover for the numbers.")
+    st.markdown(portfolio_matrix(rows), unsafe_allow_html=True)
+
+    # 4. Recommended allocation (the same engine as the city view, at one reference budget)
+    st.subheader("💊 4. Recommended allocation")
+    ref = st.number_input("Reference weekly budget (% of each city's week GMV, 0 hides this section)", value=2.0, min_value=0.0, step=0.5, key="pf_ref_budget",
+                          help="Nova needs a budget to size the split, so every city is planned at the same % of its own GMV. "
+                               "Open a city with the same budget in the city view and you get exactly this plan.")
+    if ref > 0:
+        with st.spinner("Planning every city..."):
+            alloc = portfolio_allocation(pf, w, ref)
+        ok = [a for a in alloc.values() if a.get('status') == 'ok']
+        if ok:
+            tot = sum(a['res']['summary']['spent'] for a in ok)
+            drv = sum(a['res']['summary']['drv_total'] for a in ok)
+            st.caption(f"Plan for the days that remain of W{w} at {ref:g}% of week GMV, forecast signal, Safe Capping on. "
+                       f"MX as a whole: DRV {drv / tot * 100:.0f}% / PAX {(1 - drv / tot) * 100:.0f}% (${tot:,.0f}). "
+                       "Each day shows DRV/PAX and the burn as % of that day's GMV. Targets and forced splits are set per city in the city view.")
+        else:
+            st.caption("No city has money left to place for this week (it has ended, or the reference budget is already spent).")
+        st.markdown(allocation_table(rows, alloc, w), unsafe_allow_html=True)
+    else:
+        st.caption("Allocation hidden (reference budget is 0).")
+
+    # 5. Region projection
+    st.subheader("📈 5. MX Continuous Projection")
+    render_timeline_charts(reg['hist'], reg['org'], reg['anom'], reg['clim'], w, None)
+
+    # 5. Drill-down
+    st.subheader("🔎 6. Open a city")
+    names = [x['city'] for x in rows]
+    pick = st.selectbox("City", names, key="pf_open_city")
+    st.button("Open city view", key="pf_open_btn", on_click=_open_city, args=(pick,))
+    st.caption("It opens with the reference budget of the allocation table, so the plan matches. Set the budget to 0 in 💰 Budget & Allocation for the forecast-only view.")
 # =====================================================================
 # MODULE 8: PURE HELPERS (no Streamlit): weeks, units, tables, statuses
 # =====================================================================
@@ -1628,15 +2280,14 @@ def list_saved_anomalies(overrides, today, runtime=None, city=None):
 
 
 def short_reason(r, mode='forecast'):
-    """One-line 'why' for a day of the allocation table. Wording follows the signal source."""
-    src = {'forecast': "fcst ", 'past': "recent ", 'blend': "blend "}.get(mode, "")
+    """One-line 'why' for a day of the allocation table. Uses the same names as the Alert Center (never 'P3': that is city priority)."""
     bits = []
-    if int(r['package']) > 0: bits.append(f"P{int(r['package'])}")
+    if int(r['package']) >= 2: bits.append(PACKAGE_NAME[int(r['package'])])
     if r['carried']: bits.append("carry-over")
-    if r['leak_cr'] > 0.02: bits.append(f"{src}CR gap")
-    if r['leak_sdr'] > 0.05: bits.append(f"{src}low supply")
-    if r['leak_ecr'] > 0.02: bits.append(f"{src}ECR gap")
-    if r['leak_eb'] > 0.05: bits.append(f"{src}low eyeballs")
+    if r['leak_cr'] > 0.02: bits.append("CR gap")
+    if r['leak_sdr'] > 0.05: bits.append("low supply")
+    if r['leak_ecr'] > 0.02: bits.append("ECR gap")
+    if r['leak_eb'] > 0.05: bits.append("low eyeballs")
     if mode != 'forecast':
         if r['trend_m_drv'] >= 1.05: bits.append("supply trend falling")
         if r['trend_m_pax'] >= 1.05: bits.append("conversion trend falling")
@@ -1699,7 +2350,7 @@ def render_day_diagnostics(df_historical, date_str, city_name, lat, lon):
             temp = day_climate['Temp_Max'].values[0]
             status = day_climate['intensity_cat'].values[0]
             mm_rain = day_climate['rain_mm'].values[0]
-            emoji = "⛈️" if "Tormenta" in status else ("🌧️" if "Fuerte" in status else ("🌦️" if "Moderada" in status or "Ligera" in status else "☀️"))
+            emoji = "⛈️" if "Storm" in status else ("🌧️" if "Strong" in status else ("🌦️" if "Moderate" in status or "Light" in status else "☀️"))
             st.markdown(f"### 🌡️ Satellite Weather Report ({date_str})")
             col1, col2 = st.columns(2)
             col1.metric("Max Temperature", f"{temp:.1f}°C")
@@ -1929,95 +2580,155 @@ def rows_bias_active(ctx):
     return any(abs(f - 1.0) >= 0.005 for f in ctx['bias_factors'].values())
 
 
-def build_alerts(params, ctx, m_t, df_w_daily, weather_ok):
-    """Nova's reading of weather, temperature, anomalies and ARIMA drift, most severe first. Bodies are small HTML tables."""
+# ---------------------------------------------------------------- alert center (scoped to the selected week)
+PKG_LEVEL = {6: 'critical', 3: 'warning', 4: 'warning', 5: 'warning', 2: 'info', 7: 'info'}
+LEVEL_RANK = {'critical': 3, 'warning': 2, 'info': 1, 'ok': 0}
+
+
+def week_window(week, today=None):
+    """The selected week, and whether it is the ONGOING one (today falls inside it). `next_*` is the week right after it."""
+    today = today_mx() if today is None else pd.Timestamp(today)
+    mon, sun = week_bounds(week)
+    nxt = mon + timedelta(days=7)
+    return dict(week=int(week), mon=mon, sun=sun, ongoing=bool(mon <= today <= sun),
+                next_mon=nxt, next_sun=nxt + timedelta(days=6), next_week=int(nxt.isocalendar()[1]))
+
+
+def week_events(df_clim, df_w_daily, anomalies, mon, sun, today, climate_on=True, weather_ok=True):
+    """Everything the Alert Center would flag inside [mon, sun], as a flat list of dict(date, kind, level, text), by date."""
+    ev = []
+    if climate_on and df_clim is not None and not df_clim.empty:
+        sub = df_clim[(df_clim['date'] >= mon) & (df_clim['date'] <= sun) & (df_clim['package'].isin(list(PKG_LEVEL)))]
+        for _, r in sub.iterrows():
+            p = int(r['package'])
+            ev.append(dict(date=pd.Timestamp(r['date']), kind='weather', pkg=p, level=PKG_LEVEL[p], text=PACKAGE_NAME[p]))
+    if weather_ok and df_w_daily is not None and not df_w_daily.empty:
+        hot = df_w_daily[(df_w_daily['date'] >= max(mon, today)) & (df_w_daily['date'] <= sun) & (df_w_daily['Temp_Max'] > HEAT_THRESHOLD_C)]
+        for _, r in hot.iterrows():
+            ev.append(dict(date=pd.Timestamp(r['date']), kind='heat', level='critical', text=f"Heat {r['Temp_Max']:.0f}°C"))
+    for a in anomalies or []:
+        d = pd.Timestamp(a['date'])
+        if mon <= d <= sun:
+            ev.append(dict(date=d, kind='anomaly', level='warning', text="Scheduled anomaly"))
+    return sorted(ev, key=lambda e: e['date'])
+
+
+def next_week_notice(events, win):
+    """One slim banner for the ongoing week: the important events (critical / warning) of the week after it. None when there are none."""
+    imp = [e for e in events if LEVEL_RANK[e['level']] >= LEVEL_RANK['warning']]
+    if not imp:
+        return None
+    worst = max(imp, key=lambda e: LEVEL_RANK[e['level']])['level']
+    body = " · ".join(f"<b>{_day_lbl(e['date'])}</b> {esc(e['text'])}" for e in imp)
+    return {'level': 'critical' if worst == 'critical' else 'warning',
+            'title': f"📅 Next week (W{win['next_week']}) has {len(imp)} event(s)",
+            'body': body + f" &nbsp;-&nbsp; select week {win['next_week']} in 🏙️ City &amp; Week to see them in full."}
+
+
+def build_alerts(params, ctx, m_t, df_w_daily, weather_ok, today=None):
+    """Nova's reading of the SELECTED week only (weather, heat, anomalies, forecast adjustments), most severe first.
+    Short banner by default; the tables live under 'Details'."""
     alerts = []
+    today = today_mx() if today is None else pd.Timestamp(today)
+    win = week_window(params['week'], today)
+    mon, sun = win['mon'], win['sun']
     df_clim = ctx['df_clim']
+    clim_w = df_clim[(df_clim['date'] >= mon) & (df_clim['date'] <= sun)]
     climate_on = params['clima'] and weather_ok
-
-    PKG_LEVEL = {6: 'critical', 3: 'warning', 4: 'warning', 5: 'warning', 2: 'info', 7: 'info'}
-    LEVEL_RANK = {'critical': 3, 'warning': 2, 'info': 1}
-
-    def package_group():
-        """One compact banner for every weather package; the per-package tables live in an expander under it."""
-        parts, details, worst = [], [], 'info'
-        for pkg in (6, 3, 4, 5, 2, 7):
-            sub = df_clim[df_clim['package'] == pkg]
-            if sub.empty: continue
-            lvl = PKG_LEVEL[pkg]
-            if LEVEL_RANK[lvl] > LEVEL_RANK[worst]: worst = lvl
-            parts.append(f"<b>P{pkg}</b> {', '.join(_day_lbl(d) for d in sub['date'])}")
-            rows = [[f"<b>{_day_lbl(r['date'])}</b>", f"{esc(RAIN_LEVEL_LABEL.get(rain_level(r['intensity_cat']), r['intensity_cat']))} - {r['rain_mm']:.1f} mm",
-                     esc(r['rain_windows'] or '-'), esc(r['flood_risk']), esc(PACKAGE_STANCE[pkg]['note'])] for _, r in sub.iterrows()]
-            details.append(f"<b>Package {pkg}: {esc(PACKAGE_PRESCRIPTION[pkg])}</b>" +
-                           html_table(["Day", "Rain", "Hits", "Flood risk", "What Nova does with the budget"], rows))
-        if not parts: return
-        n_days = int((df_clim['package'].isin(list(PKG_LEVEL))).sum())
-        alerts.append({'level': worst, 'title': f"📦 Weather packages: {n_days} day(s) need an action",
-                       'body': " · ".join(parts), 'details': details, 'details_label': "Package details (day, rain, peak hits, what Nova does)"})
+    events = week_events(df_clim, df_w_daily, ctx['anomalies_applied'], mon, sun, today, climate_on, weather_ok)
 
     if not weather_ok:
         alerts.append({'level': 'warning', 'title': '⚠️ Weather feed unavailable',
                        'body': 'Open-Meteo did not answer. Rain adjustments, heat alerts and the weather detail are skipped in this run.'})
 
-    if weather_ok:
-        hot = df_w_daily[(df_w_daily['date'] >= today_mx()) & (df_w_daily['Temp_Max'] > HEAT_THRESHOLD_C)]
-        if not hot.empty:
-            rows = [[f"<b>{_day_lbl(r['date'])}</b>", f"{r['Temp_Max']:.1f}°C", f"+{r['Temp_Max'] - HEAT_THRESHOLD_C:.1f}°C over the threshold"] for _, r in hot.iterrows()]
-            alerts.append({'level': 'critical',
-                           'title': "🔥 Heatwave Detectada: Riesgo de colapso de supply por calor extremo. Usa el Anomaly Engine para inyectar datos históricos.",
-                           'body': html_table(["Day", "Max temp", "Gap"], rows)})
+    # ---- heat
+    heat = [e for e in events if e['kind'] == 'heat']
+    if heat:
+        hot = df_w_daily[(df_w_daily['date'] >= max(mon, today)) & (df_w_daily['date'] <= sun) & (df_w_daily['Temp_Max'] > HEAT_THRESHOLD_C)]
+        rows = [[f"<b>{_day_lbl(r['date'])}</b>", f"{r['Temp_Max']:.1f}°C", f"+{r['Temp_Max'] - HEAT_THRESHOLD_C:.1f}°C over the threshold"] for _, r in hot.iterrows()]
+        alerts.append({'level': 'critical', 'title': f"🔥 Heat: {', '.join(_day_lbl(e['date']) for e in heat)} above {HEAT_THRESHOLD_C:.0f}°C",
+                       'body': "Extreme heat can collapse driver supply. If you expect it, build an anomaly from a past hot day in 🌦️ Environment &amp; Anomalies.",
+                       'details': [html_table(["Day", "Max temp", "Gap"], rows)], 'details_label': "Temperatures"})
 
-    if climate_on:
-        package_group()
-        mcols = [f'mult_{m}' for m in FUNNEL_METRICS]
-        adj = df_clim[(df_clim[mcols] != 1.0).any(axis=1)]
-        if not adj.empty:
-            rows = [[f"<b>{_day_lbl(r['date'])}</b>", esc(r['intensity_cat']), f"{r['rain_mm']:.1f} mm", f"P{int(r['package'])}",
-                     f"x{r['mult_eyeballs']:.3f}", f"x{r['mult_calls']:.3f}", f"x{r['mult_trips']:.3f}", f"x{r['mult_tsh']:.3f}"] for _, r in adj.iterrows()]
-            alerts.append({'level': 'info', 'title': f"🌧️ Climate shock: elasticity applied to the organic forecast on {len(adj)} day(s)",
-                           'body': html_table(["Day", "Rain", "Amount", "Package", "Eyeballs", "Calls", "Trips", "Supply hrs"], rows)})
-
-        # Rain is forecast but nothing multiplied it: say WHY instead of staying silent
-        city_block = get_city_weather_block(load_weather_dict(), params['city_name'])
-        neutral = df_clim[(df_clim['intensity_cat'].map(rain_level) != 'none') & ((df_clim[mcols] == 1.0).all(axis=1))]
-        if not neutral.empty:
-            rows = []
-            for _, r in neutral.iterrows():
-                node = resolve_weather_node(city_block, r['intensity_cat'], r['flood_risk']) if city_block else None
-                why = ("city not in the weather dictionary" if not city_block else
-                       "no dictionary entry for this rain bucket" if node is None else "dictionary cell is empty (null) for this bucket")
-                rows.append([f"<b>{_day_lbl(r['date'])}</b>", esc(r['intensity_cat']), esc(r['flood_risk']), why])
-            alerts.append({'level': 'info', 'title': f"ℹ️ Rain forecast but no climate multiplier on {len(neutral)} day(s) (forecast left as organic)",
-                           'body': html_table(["Day", "Rain bucket", "Flood risk", "Why"], rows)})
-
-    applied = ctx['anomalies_applied']
-    if applied:
+    # ---- weather packages (one banner, one line per day)
+    wx = [e for e in events if e['kind'] == 'weather']
+    if wx:
+        worst = max(wx, key=lambda e: LEVEL_RANK[e['level']])['level']
+        lines = [f"<b>{_day_lbl(e['date'])}</b> {esc(PACKAGE_NAME[e['pkg']])}: {esc(PACKAGE_ACTION[e['pkg']])}" for e in wx]
         rows = []
+        for e in wx:
+            r = clim_w[clim_w['date'] == e['date']].iloc[0]
+            rows.append([f"<b>{_day_lbl(r['date'])}</b>", esc(PACKAGE_NAME[e['pkg']]),
+                         f"{esc(RAIN_LEVEL_LABEL.get(rain_level(r['intensity_cat']), r['intensity_cat']))} - {r['rain_mm']:.1f} mm",
+                         esc(r['rain_windows'] or '-'), esc(r['flood_risk'])])
+        alerts.append({'level': worst, 'title': f"☔ Weather: {len(wx)} day(s) need an action in W{win['week']}", 'body': "<br>".join(lines),
+                       'details': [html_table(["Day", "Weather package", "Rain", "Hits", "Flood risk"], rows)], 'details_label': "Rain, peak hits and flood risk"})
+
+    # ---- scheduled anomalies
+    applied = [a for a in ctx['anomalies_applied'] if mon <= pd.Timestamp(a['date']) <= sun]
+    if applied:
+        rows, lines = [], []
         for a in applied:
             mm, dd = a['mults'], a['derived']
+            lines.append(f"<b>{_day_lbl(a['date'])}</b> replays {esc(a['reference_date'])}: trips x{mm['trips']:.2f}, calls x{mm['calls']:.2f}, "
+                         f"eyeballs x{mm['eyeballs']:.2f}, supply hours x{mm['tsh']:.2f}")
             rows.append([f"<b>{_day_lbl(a['date'])}</b>", esc(a['reference_date']),
                          f"x{mm['trips']:.2f}", f"x{mm['calls']:.2f}", f"x{mm['eyeballs']:.2f}", f"x{mm['tsh']:.2f}",
                          f"x{dd['cr']:.2f}", f"x{dd['ecr']:.2f}", f"x{dd['etr']:.2f}", f"x{dd['sdr']:.2f}"])
         word = "anomaly" if len(applied) == 1 else "anomalies"
-        alerts.append({'level': 'warning', 'title': f"⚡ Anomaly Engine: {len(applied)} scheduled {word} injected into the funnel",
-                       'body': html_table(["Day", "Reference", "Trips", "Calls", "Eyeballs", "TSH", "CR", "ECR", "ETR", "SDR"], rows)})
+        alerts.append({'level': 'warning', 'title': f"⚡ {len(applied)} scheduled {word} in the forecast", 'body': "<br>".join(lines),
+                       'details': [html_table(["Day", "Reference", "Trips", "Calls", "Eyeballs", "TSH", "CR", "ECR", "ETR", "SDR"], rows)], 'details_label': "Multipliers, including CR / ECR / ETR / SDR"})
+
+    # ---- forecast adjustments: one quiet line, the tables behind it
+    items, blocks = [], []
+    if climate_on:
+        mcols = [f'mult_{m}' for m in FUNNEL_METRICS]
+        adj = clim_w[(clim_w[mcols] != 1.0).any(axis=1)]
+        if not adj.empty:
+            items.append(f"rain adjusted the organic forecast on {len(adj)} day(s)")
+            rows = [[f"<b>{_day_lbl(r['date'])}</b>", esc(r['intensity_cat']), f"{r['rain_mm']:.1f} mm", esc(PACKAGE_NAME.get(int(r['package']), '-')),
+                     f"x{r['mult_eyeballs']:.3f}", f"x{r['mult_calls']:.3f}", f"x{r['mult_trips']:.3f}", f"x{r['mult_tsh']:.3f}"] for _, r in adj.iterrows()]
+            blocks.append("<b>Climate shock (multipliers applied)</b>" + html_table(["Day", "Rain", "Amount", "Package", "Eyeballs", "Calls", "Trips", "Supply hrs"], rows))
+
+        w_dict_now = load_weather_dict()
+        has_city = bool(get_city_weather_block(w_dict_now, params['city_name']))
+        rainy = clim_w[clim_w['intensity_cat'].map(rain_level) != 'none']
+        borrowed = rainy[~rainy['mult_source'].isin([SRC_DICT, SRC_NEUTRAL])]
+        if not borrowed.empty:
+            items.append(f"{len(borrowed)} day(s) use borrowed dictionary values" + ("" if has_city else f" ({esc(params['city_name'])} is not in the weather dictionary)"))
+            rows = [[f"<b>{_day_lbl(r['date'])}</b>", esc(r['intensity_cat']), esc(r['flood_risk']), esc(r['mult_source']),
+                     f"x{r['mult_eyeballs']:.3f}", f"x{r['mult_calls']:.3f}", f"x{r['mult_trips']:.3f}", f"x{r['mult_tsh']:.3f}"] for _, r in borrowed.iterrows()]
+            blocks.append("<b>Dictionary gaps filled with borrowed values</b>" + html_table(["Day", "Rain bucket", "Flood risk", "Borrowed from", "Eyeballs", "Calls", "Trips", "Supply hrs"], rows)
+                          + "<div style='margin-top:6px;opacity:.8'>Borrowed values are pulled toward 1.0 (25% from the same city, 50% from other cities) and are replaced "
+                            "automatically as the dictionary learns from real rain days.</div>")
+        neutral = rainy[rainy['mult_source'] == SRC_NEUTRAL]
+        if not neutral.empty:
+            items.append(f"{len(neutral)} rainy day(s) have no multiplier (left organic)")
+            rows = []
+            for _, r in neutral.iterrows():
+                node = resolve_weather_node(get_city_weather_block(w_dict_now, params['city_name']), r['intensity_cat'], r['flood_risk']) if has_city else None
+                why = ("city not in the weather dictionary" if not has_city else
+                       "no dictionary entry for this rain bucket" if node is None else "dictionary cell is empty (null)")
+                if params.get('fill_gaps', True): why += " and nothing to borrow from"
+                rows.append([f"<b>{_day_lbl(r['date'])}</b>", esc(r['intensity_cat']), esc(r['flood_risk']), why])
+            blocks.append("<b>Rain forecast but no climate multiplier</b>" + html_table(["Day", "Rain bucket", "Flood risk", "Why"], rows))
 
     diag = {d['metric']: d for d in ctx['bias_diag']}
-    rows = []
+    brows = []
     for m, f in ctx['bias_factors'].items():
         if abs(f - 1.0) >= 0.005:
-            rows.append([esc(METRIC_LABELS[m]), "under-estimating" if f > 1 else "over-estimating", f"{abs(f - 1) * 100:.1f}%", f"{diag[m]['n']} days", f"x{f:.3f}"])
-    if rows:
-        alerts.append({'level': 'info', 'title': '📈 Rolling Bias Corrector is active',
-                       'body': html_table(["Metric", "ARIMA has been", "By", "Over the last", "Future days scaled by"], rows)})
-
-    if not rows_bias_active(ctx):
+            brows.append([esc(METRIC_LABELS[m]), "under-estimating" if f > 1 else "over-estimating", f"{abs(f - 1) * 100:.1f}%", f"{diag[m]['n']} days", f"x{f:.3f}"])
+    if brows:
+        items.append("ARIMA bias corrected on " + ", ".join(r[0].lower() for r in brows))
+        blocks.append("<b>Rolling Bias Corrector</b>" + html_table(["Metric", "ARIMA has been", "By", "Over the last", "Future days scaled by"], brows))
+    elif items:
         n_obs = max([d['n'] for d in ctx['bias_diag']] or [0])
-        alerts.append({'level': 'info', 'title': '📈 Rolling Bias Corrector: not correcting',
-                       'body': f"ARIMA memory has {n_obs} closed day(s) for this city (needs {BIAS_MIN_OBS}, all leaning the same way at least "
-                               f"{int(BIAS_MIN_CONSISTENCY * 100)}% of the time). It fills up as days pass; a restart of the server empties it."})
+        blocks.append(f"<b>Rolling Bias Corrector: not correcting.</b> ARIMA memory has {n_obs} closed day(s) for this city (needs {BIAS_MIN_OBS}, all leaning the same way at least "
+                      f"{int(BIAS_MIN_CONSISTENCY * 100)}% of the time). A restart of the server empties it.")
+    if items:
+        alerts.append({'level': 'info', 'title': "🧪 Forecast adjustments", 'body': " · ".join(items), 'details': blocks, 'details_label': "What changed and by how much"})
 
+    # ---- targets
     a = agg_funnel(m_t)
     if a is not None:
         if params["target_cr"] > 0 and a['cr'] < params["target_cr"]:
@@ -2026,14 +2737,20 @@ def build_alerts(params, ctx, m_t, df_w_daily, weather_ok):
         if params["target_calls"] > 0 and a['calls'] < params["target_calls"]:
             alerts.append({'level': 'warning', 'title': '⚠️ Target Calls at risk',
                            'body': f"Projection ({int(a['calls']):,}) is missing {int(params['target_calls'] - a['calls']):,} calls to reach the target ({int(params['target_calls']):,})."})
+    alerts.sort(key=lambda x: -LEVEL_RANK[x['level']])
     return alerts
 
 
-def render_alert_center(alerts):
+def render_alert_center(alerts, win=None, notice=None):
     st.subheader("🚨 2. Alert Center")
+    if win:
+        st.caption(f"Week {win['week']} ({win['mon'].strftime('%b %d')} to {win['sun'].strftime('%b %d')})"
+                   + (": the ongoing week." if win['ongoing'] else "."))
+    if notice:
+        st.markdown(f'<div class="nova-alert {notice["level"]}"><div class="nova-alert-title">{notice["title"]}</div><div class="nova-alert-body">{notice["body"]}</div></div>', unsafe_allow_html=True)
     if not alerts:
         alerts = [{'level': 'ok', 'title': '✅ All clear',
-                   'body': 'No weather hazards, heat, scheduled anomalies or ARIMA drift detected in the forecast horizon.'}]
+                   'body': 'No weather hazards, heat or scheduled anomalies in this week.'}]
     for a in alerts:
         st.markdown(f'<div class="nova-alert {a["level"]}"><div class="nova-alert-title">{a["title"]}</div><div class="nova-alert-body">{a["body"]}</div></div>', unsafe_allow_html=True)
         if a.get('details'):
@@ -2065,31 +2782,69 @@ def render_anomaly_flash(flash, ctx, params):
                    f"{_day_lbl(horizon_max)}). It will apply automatically once the forecast reaches it.")
 
 
-def render_allocation_engine(params, ctx, df_historical, m_t, w_target):
-    """Allocation Engine: weekly DRV/PAX split, daily plan, reasons and past burn. Only called when budget > 0."""
-    st.subheader("💊 5. Allocation Engine (Budget Manager)")
+def plan_allocation(params, df_clim, df_historical, m_t, w_target):
+    """
+    Everything the Allocation Engine needs for ONE city and ONE week: past burn (Burn SoT or manual), the money still to place,
+    the response strengths and the engine result. Used by the city view AND the portfolio table, so they can never disagree.
+    status: ok | no_gmv | ended | spent | empty
+    """
     mon, sun = week_bounds(w_target)
-    df_clim = ctx['df_clim']
     hist_week = df_historical[(df_historical['date'] >= mon) & (df_historical['date'] <= sun)]
     fcst_week = df_clim[(df_clim['date'] >= mon) & (df_clim['date'] <= sun)].copy().reset_index(drop=True)
     week_gmv = float(m_t['gmv'].sum()) if not m_t.empty else 0.0
+    out = dict(status='ok', mon=mon, sun=sun, fcst_week=fcst_week, week_gmv=week_gmv, burn_error=None, res=None,
+               beta_info=None, betas=None,
+               past=pd.DataFrame(columns=['date', 'drv_usd', 'pax_usd', 'drv_pct', 'pax_pct', 'source', 'missing', 'total_usd', 'total_pct']))
 
-    # ---------------- past burn (automatic from Burn SoT, manual only as a fallback)
-    past = pd.DataFrame(columns=['date', 'drv_usd', 'pax_usd', 'drv_pct', 'pax_pct', 'source', 'missing', 'total_usd', 'total_pct'])
     if not hist_week.empty:
         if params.get('manual_burn'):
-            past = build_past_burn_frame(hist_week, manual=params.get('manual_past') or {})
+            out['past'] = build_past_burn_frame(hist_week, manual=params.get('manual_past') or {})
         else:
             try:
                 burn_df = get_past_burn(params['city'], mon.strftime('%Y-%m-%d'), hist_week['date'].max().strftime('%Y-%m-%d'))
-                past = build_past_burn_frame(hist_week, burn_df=burn_df)
+                out['past'] = build_past_burn_frame(hist_week, burn_df=burn_df)
             except Exception as e:
-                st.warning(f"⚠️ Could not read Burn SoT ({e}). Past burn is counted as 0. Turn on the manual override in 💰 Budget & Allocation to type it yourself.")
-                past = build_past_burn_frame(hist_week, burn_df=pd.DataFrame())
+                out['burn_error'] = str(e)
+                out['past'] = build_past_burn_frame(hist_week, burn_df=pd.DataFrame())
+    past = out['past']
     spent_usd = float(past['total_usd'].sum()) if not past.empty else 0.0
-    plan = plan_week_budget(params['budget'], week_gmv, spent_usd)
+    out['spent_usd'] = spent_usd
+    out['plan'] = plan_week_budget(params['budget'], week_gmv, spent_usd)
 
     if week_gmv <= 0:
+        out['status'] = 'no_gmv'; return out
+    if fcst_week.empty:
+        out['status'] = 'ended'; return out
+    if out['plan']['remaining_usd'] <= 0:
+        out['status'] = 'spent'; return out
+
+    try:
+        beta_info = get_response_betas(params['city'])
+        out['beta_info'] = beta_info
+        out['betas'] = {k: float(beta_info[k]['beta']) for k in ('drv', 'pax')}
+    except Exception:
+        pass
+    out['res'] = run_allocation_engine(
+        fcst_week, df_historical, out['plan']['remaining_usd'], mode=params['signal'],
+        cr_target=pct_to_frac(params['target_cr']), calls_target=float(params['target_calls']),
+        weekly_calls=float(m_t['calls'].sum()),
+        force_drv_share=pct_to_frac(params['split']) if params['force'] else None,
+        safe_mode=params['safe_mode'], betas=out['betas'])
+    if out['res'] is None:
+        out['status'] = 'empty'
+    return out
+
+
+def render_allocation_engine(params, ctx, df_historical, m_t, w_target):
+    """Allocation Engine: weekly DRV/PAX split, daily plan and the reasons. Short by default; the full reasoning sits in one expander."""
+    st.subheader("💊 5. Allocation Engine (Budget Manager)")
+    df_clim = ctx['df_clim']
+    A = plan_allocation(params, df_clim, df_historical, m_t, w_target)
+    past, plan, fcst_week, week_gmv = A['past'], A['plan'], A['fcst_week'], A['week_gmv']
+    if A['burn_error']:
+        st.warning(f"⚠️ Could not read Burn SoT ({A['burn_error']}). Past burn is counted as 0. Turn on the manual override in 💰 Budget & Allocation to type it yourself.")
+
+    if A['status'] == 'no_gmv':
         st.info("There is no GMV for this week yet, so the budget cannot be converted to money.")
         return
 
@@ -2104,7 +2859,7 @@ def render_allocation_engine(params, ctx, df_historical, m_t, w_target):
         note = gmv_mismatch_note(past)
         if note:
             st.warning("⚠️ Burn SoT and Daily DB disagree on GMV. " + note)
-        with st.expander(f"🧾 Burn already spent this week ({past['source'].iloc[0]})", expanded=True):
+        with st.expander(f"🧾 Burn already spent this week ({past['source'].iloc[0]})", expanded=False):
             show = pd.DataFrame({
                 "Day": past['date'].map(_day_lbl),
                 "DRV burn (%)": past['drv_pct'].map(lambda v: f"{v:.2f}%"),
@@ -2118,28 +2873,16 @@ def render_allocation_engine(params, ctx, df_historical, m_t, w_target):
             if past['missing'].any():
                 st.caption("Days with no Burn SoT row are counted as 0: " + ", ".join(past.loc[past['missing'], 'date'].map(_day_lbl)) + ".")
 
-    if fcst_week.empty:
+    if A['status'] == 'ended':
         st.success("✅ The week has ended (or has no forecast days). No future budget to allocate.")
         return
-    if plan['remaining_usd'] <= 0:
+    if A['status'] == 'spent':
         st.warning("The weekly budget is already fully spent, so there is nothing left to allocate.")
         return
-
-    # ---------------- run the engine (money in, money out; % only at this boundary)
-    try:
-        beta_info = get_response_betas(params['city'])
-        betas = {k: float(beta_info[k]['beta']) for k in ('drv', 'pax')}
-    except Exception:
-        beta_info, betas = None, None
-    res = run_allocation_engine(
-        fcst_week, df_historical, plan['remaining_usd'], mode=params['signal'],
-        cr_target=pct_to_frac(params['target_cr']), calls_target=float(params['target_calls']),
-        weekly_calls=float(m_t['calls'].sum()),
-        force_drv_share=pct_to_frac(params['split']) if params['force'] else None,
-        safe_mode=params['safe_mode'], betas=betas)
-    if res is None:
+    if A['status'] == 'empty':
         st.info("The engine had nothing to allocate.")
         return
+    res, beta_info, betas = A['res'], A['beta_info'], A['betas']
     d, s = res['days'], res['summary']
 
     # ---------------- weekly split and effect
@@ -2152,7 +2895,6 @@ def render_allocation_engine(params, ctx, df_historical, m_t, w_target):
               f"DRV {frac_to_pct(drv_all / week_gmv):.2f}% + PAX {frac_to_pct(pax_all / week_gmv):.2f}% of GMV", delta_color="off")
     k3.metric("Modelled extra trips", f"+{s['gain']:,.0f}", f"+{s['gain_pct']:.2f}% of the remaining days", delta_color="off")
     k4.metric("Cost per extra trip", f"${s['cpit']:,.2f}" if np.isfinite(s['cpit']) else "-", f"{s['closed'] * 100:.0f}% of the opportunity closed", delta_color="off")
-    st.info("📡 " + signal_note(s))
     st.info("🧠 " + week_insight(s))
     if s['leftover'] > 1:
         st.warning(f"${s['leftover']:,.0f} ({frac_to_pct(s['leftover'] / week_gmv):.2f}% of week GMV) could not be placed because the daily cap "
@@ -2161,7 +2903,7 @@ def render_allocation_engine(params, ctx, df_historical, m_t, w_target):
         st.caption(f"Safe Capping is binding on at least one day (max {SAFE_CAP_FRAC * 100:.0f}% of that day's GMV).")
 
     # ---------------- week table: played days + plan
-    total_week_money = s['spent'] + spent_usd
+    total_week_money = s['spent'] + A['spent_usd']
     rows, chart_rows = [], []
     for _, r in past.iterrows():
         t = r['total_usd']
@@ -2192,58 +2934,62 @@ def render_allocation_engine(params, ctx, df_historical, m_t, w_target):
     st.altair_chart(bars.properties(height=260), use_container_width=True)
     st.caption("Faded bars are money already spent (Burn SoT). Solid bars are Nova's plan for the days that remain.")
 
-    # ---------------- explanations
-    st.markdown("#### 🔍 Why this allocation?")
+    # ---------------- explanations: short by default, everything else behind one expander
+    st.markdown("#### 🔍 Why this plan?")
     labels = [f"{_day_lbl(r['date'])}  -  ${r['x_total']:,.0f}  ({r['split_drv'] * 100:.0f}/{(1 - r['split_drv']) * 100:.0f})" for _, r in d.iterrows()]
     pick = st.selectbox("Day to explain", range(len(labels)), format_func=lambda i: labels[i], key="alloc_explain_day")
     row = d.iloc[pick]
     fw = fcst_week.iloc[pick]
     weather_txt = f"{fw['intensity_cat']}, {fw['rain_mm']:.1f} mm, flood risk {fw['flood_risk']}" if str(fw['intensity_cat']) != 'No Rain' else ""
-    st.markdown(explain_day(row, s, weather_txt, PACKAGE_PRESCRIPTION.get(int(row['package']), "")))
+    st.markdown(explain_day_brief(row, s, weather_txt))
+    st.caption(f"Signal: {SIGNAL_LABELS.get(s['mode'], s['mode'])}.")
 
-    with st.expander("🔀 How the signal source changes the plan (Forecast vs Blend vs Past)"):
-        st.caption("Same budget, same targets, same weather: only the signal changes. Each cell is the day's total burn as % of its GMV and the DRV/PAX split.")
-        others = {s['mode']: res}
-        for m in ('forecast', 'blend', 'past'):
-            if m not in others:
-                others[m] = run_allocation_engine(
-                    fcst_week, df_historical, plan['remaining_usd'], mode=m,
-                    cr_target=pct_to_frac(params['target_cr']), calls_target=float(params['target_calls']),
-                    weekly_calls=float(m_t['calls'].sum()),
-                    force_drv_share=pct_to_frac(params['split']) if params['force'] else None,
-                    safe_mode=params['safe_mode'], betas=betas)
-        cmp_df, cmp_notes = signal_comparison(others)
-        st.dataframe(cmp_df, hide_index=True, use_container_width=True)
-        for n in cmp_notes:
-            st.caption("• " + n)
-        if not cmp_notes:
-            st.caption("The three signal sources lead to a very similar plan this week.")
-
-    with st.expander("🧮 Opportunity map (what the engine sees on each day)"):
-        st.caption("Leaks are how far each part of the funnel sits below its healthy reference (same weekday, last 4 weeks, or your CR target). "
-                   "Negative means the day is doing better than normal. Value x is what weather, trend and calls target add to a peso on that channel.")
-        st.dataframe(pd.DataFrame({
-            "Day": d['date'].map(_day_lbl),
-            "CR": [f"{c * 100:.1f}% vs {rf * 100:.1f}%" for c, rf in zip(d['c'], d['c_ref'])],
-            "ECR": [f"{e * 100:.1f}% vs {rf * 100:.1f}%" for e, rf in zip(d['e'], d['e_ref'])],
-            "CR gap": (d['leak_cr'] * 100).map(lambda v: f"{v:+.1f}%"),
-            "Supply gap": (d['leak_sdr'] * 100).map(lambda v: f"{v:+.1f}%"),
-            "ECR gap": (d['leak_ecr'] * 100).map(lambda v: f"{v:+.1f}%"),
-            "Eyeball gap": (d['leak_eb'] * 100).map(lambda v: f"{v:+.1f}%"),
-            "DRV opportunity": (d['g_drv'] * 100).map(lambda v: f"{v:.1f}%"),
-            "  by forecast / by past": [f"{a * 100:.1f}% / {b * 100:.1f}%" for a, b in zip(d['g_drv_fc'], d['g_drv_pa'])],
-            "PAX opportunity": (d['g_pax'] * 100).map(lambda v: f"{v:.1f}%"),
-            " by forecast / by past": [f"{a * 100:.1f}% / {b * 100:.1f}%" for a, b in zip(d['g_pax_fc'], d['g_pax_pa'])],
-            "DRV value x": d['m_drv'].map(lambda v: f"{v:.2f}"),
-            "PAX value x": d['m_pax'].map(lambda v: f"{v:.2f}"),
-        }), hide_index=True, use_container_width=True)
-        if beta_info:
-            def _b(k):
-                x = beta_info[k]
-                return f"{x['beta']:.2f} ({x['source']}" + (f", t={x['t']:.1f}, {x['n']} days" if x.get('t') is not None else "") + ")"
-            st.caption(f"Response strength (lift per 100% of GMV burned): DRV {_b('drv')}, PAX {_b('pax')}. "
-                       "The prior is used whenever history cannot support a calibrated value.")
-        st.caption(f"Signal source: {SIGNAL_LABELS.get(s['mode'], s['mode'])}.")
+    with st.expander("🧠 Full reasoning (every number Nova used)"):
+        t_day, t_sig, t_map = st.tabs(["This day in detail", "Forecast vs Blend vs Past", "Opportunity map"])
+        with t_day:
+            st.info("📡 " + signal_note(s))
+            st.markdown(explain_day(row, s, weather_txt, PACKAGE_PRESCRIPTION.get(int(row['package']), "")))
+        with t_sig:
+            st.caption("Same budget, same targets, same weather: only the signal changes. Each cell is the day's total burn as % of its GMV and the DRV/PAX split.")
+            others = {s['mode']: res}
+            for m in ('forecast', 'blend', 'past'):
+                if m not in others:
+                    others[m] = run_allocation_engine(
+                        fcst_week, df_historical, A['plan']['remaining_usd'], mode=m,
+                        cr_target=pct_to_frac(params['target_cr']), calls_target=float(params['target_calls']),
+                        weekly_calls=float(m_t['calls'].sum()),
+                        force_drv_share=pct_to_frac(params['split']) if params['force'] else None,
+                        safe_mode=params['safe_mode'], betas=betas)
+            cmp_df, cmp_notes = signal_comparison(others)
+            st.dataframe(cmp_df, hide_index=True, use_container_width=True)
+            for n in cmp_notes:
+                st.caption("• " + n)
+            if not cmp_notes:
+                st.caption("The three signal sources lead to a very similar plan this week.")
+        with t_map:
+            st.caption("Leaks are how far each part of the funnel sits below its healthy reference (same weekday, last 4 weeks, or your CR target). "
+                       "Negative means the day is doing better than normal. Value x is what weather, trend and calls target add to a peso on that channel.")
+            st.dataframe(pd.DataFrame({
+                "Day": d['date'].map(_day_lbl),
+                "CR": [f"{c * 100:.1f}% vs {rf * 100:.1f}%" for c, rf in zip(d['c'], d['c_ref'])],
+                "ECR": [f"{e * 100:.1f}% vs {rf * 100:.1f}%" for e, rf in zip(d['e'], d['e_ref'])],
+                "CR gap": (d['leak_cr'] * 100).map(lambda v: f"{v:+.1f}%"),
+                "Supply gap": (d['leak_sdr'] * 100).map(lambda v: f"{v:+.1f}%"),
+                "ECR gap": (d['leak_ecr'] * 100).map(lambda v: f"{v:+.1f}%"),
+                "Eyeball gap": (d['leak_eb'] * 100).map(lambda v: f"{v:+.1f}%"),
+                "DRV opportunity": (d['g_drv'] * 100).map(lambda v: f"{v:.1f}%"),
+                "  by forecast / by past": [f"{a * 100:.1f}% / {b * 100:.1f}%" for a, b in zip(d['g_drv_fc'], d['g_drv_pa'])],
+                "PAX opportunity": (d['g_pax'] * 100).map(lambda v: f"{v:.1f}%"),
+                " by forecast / by past": [f"{a * 100:.1f}% / {b * 100:.1f}%" for a, b in zip(d['g_pax_fc'], d['g_pax_pa'])],
+                "DRV value x": d['m_drv'].map(lambda v: f"{v:.2f}"),
+                "PAX value x": d['m_pax'].map(lambda v: f"{v:.2f}"),
+            }), hide_index=True, use_container_width=True)
+            if beta_info:
+                def _b(k):
+                    x = beta_info[k]
+                    return f"{x['beta']:.2f} ({x['source']}" + (f", t={x['t']:.1f}, {x['n']} days" if x.get('t') is not None else "") + ")"
+                st.caption(f"Response strength (lift per 100% of GMV burned): DRV {_b('drv')}, PAX {_b('pax')}. "
+                           "The prior is used whenever history cannot support a calibrated value.")
 
 
 # =====================================================================
@@ -2315,6 +3061,14 @@ def render_command_center(current_week, current_date):
         st.markdown('<div class="nova-cc-marker"></div><div class="nova-cc-title">🧠 Nova Command Center</div>'
                     '<div class="nova-cc-sub">Budget allocation engine powered by casually-informed AI</div>', unsafe_allow_html=True)
         legend_slot = st.empty()  # filled once every widget below has a value; lives in the header so it can never spill out of the panel
+        if 'nova_view' not in st.session_state:
+            try:
+                qp_view = st.query_params.get("view")      # ?view=portfolio opens the MX view directly
+            except Exception:
+                qp_view = None
+            st.session_state['nova_view'] = VIEW_PORT if qp_view == "portfolio" else VIEW_CITY
+        p_view = st.radio("View", [VIEW_CITY, VIEW_PORT], horizontal=True, key="nova_view", label_visibility="collapsed")
+        is_port = (p_view == VIEW_PORT)
         col_city, col_budget, col_env, col_saved, col_sys = st.columns(5)
 
         # ---- City & Week (nothing else) ----
@@ -2323,7 +3077,7 @@ def render_command_center(current_week, current_date):
             p_week = int(st.number_input("Calendar Week", value=int(current_week), min_value=1, max_value=53, key="cc_week"))
 
         # ---- Budget & Allocation (every target lives here; 0 keeps the app in Decoupled mode) ----
-        with col_budget.popover("💰 Budget & Allocation"):
+        with col_budget.popover("💰 Budget & Allocation", disabled=is_port):
             st.caption("Everything here is typed in % (or weekly calls). Nova converts it to money and real rates internally.")
             p_budget = st.number_input("Weekly budget (% of week GMV)", value=0.0, min_value=0.0, step=0.5, key="cc_budget",
                                        help="0 = Decoupled mode: only the forecast is shown. Above 0 unlocks the Allocation Engine. "
@@ -2354,14 +3108,17 @@ def render_command_center(current_week, current_date):
                                            c_b.number_input(f"{days_en[i][:3]} PAX burn (%)", value=0.0, step=0.1, key=f"cc_mpax_{i}"))
 
         # ---- Environment & Anomalies ----
-        with col_env.popover("🌦️ Climate / Anomalies"):
+        with col_env.popover("🌦️ Environment & Anomalies"):
             p_climate = st.toggle("Enable Climate Tree (rain adjustments and packages)", value=True, key="cc_clima")
+            p_fill = st.toggle("Fill empty dictionary cells with borrowed values", value=True, key="cc_fill",
+                               help="When the dictionary has no number for a rain bucket, Nova borrows (shrunk) from the same city's neighbouring flood level, then from other cities.")
             p_anoms = st.toggle("Apply scheduled anomalies", value=True, key="cc_anoms")
             st.divider()
             st.markdown("**⚡ New anomaly**")
             st.caption("Pick the future day(s) you expect to be unusual and the past day(s) that looked the same. Nova stores how the past day(s) moved "
                        "versus the same weekday 1 and 2 weeks earlier (trips, calls, eyeballs, supply hours) and replays that on the future day(s). "
                        "CR, ECR, ETR and SDR are derived from those volumes.")
+            st.caption(f"Anomalies are saved for the city selected in City & Week: **{p_city_name}**.")
             f_val = st.date_input("📅 Future date(s)", value=(today_date + timedelta(days=1), today_date + timedelta(days=1)),
                                   min_value=today_date, key="cc_anom_future")
             r_val = st.date_input("🕰️ Past reference date(s)", value=(today_date - timedelta(days=1), today_date - timedelta(days=1)),
@@ -2408,9 +3165,12 @@ def render_command_center(current_week, current_date):
             if st.button("🧠 Retrain Models in BQ", key="cc_retrain", use_container_width=True):
                 retrain_models()
 
-        bits = [f"Showing <b>{esc(p_city_name)}</b>", f"week <b>{p_week}</b>",
-                f"budget <b>{p_budget:g}% of GMV</b>" if p_budget > 0 else "<b>no budget</b> (forecast only)"]
-        if p_budget > 0:
+        if is_port:
+            bits = ["Showing <b>MX Portfolio</b> (all cities)", f"week <b>{p_week}</b>", "no budget (management view)"]
+        else:
+            bits = [f"Showing <b>{esc(p_city_name)}</b>", f"week <b>{p_week}</b>",
+                    f"budget <b>{p_budget:g}% of GMV</b>" if p_budget > 0 else "<b>no budget</b> (forecast only)"]
+        if p_budget > 0 and not is_port:
             bits.append(f"signal <b>{esc(SIGNAL_LABELS[p_signal])}</b>")
             if p_cr > 0: bits.append(f"CR target <b>{p_cr:g}%</b>")
             if p_calls > 0: bits.append(f"calls target <b>{int(p_calls):,}</b>")
@@ -2423,9 +3183,9 @@ def render_command_center(current_week, current_date):
     return {
         "city": CITIES_DICT[p_city_name], "city_name": p_city_name, "week": p_week,
         "budget": float(p_budget), "target_calls": float(p_calls), "target_cr": float(p_cr),
-        "signal": p_signal, "clima": p_climate, "use_anomalies": p_anoms,
+        "signal": p_signal, "clima": p_climate, "use_anomalies": p_anoms, "fill_gaps": p_fill,
         "force": p_force, "split": p_split, "safe_mode": p_safe_mode,
-        "manual_burn": bool(p_manual), "manual_past": manual_past,
+        "manual_burn": bool(p_manual), "manual_past": manual_past, "view": "portfolio" if is_port else "city",
     }
 
 
@@ -2474,7 +3234,12 @@ def render_dashboard(params):
     render_kpi_cards(m_t, m_1, w_target, city_name)
 
     # 2. Alert Center
-    render_alert_center(build_alerts(params, ctx, m_t, df_w_daily, weather_ok))
+    win = week_window(w_target)
+    notice = None
+    if win['ongoing']:
+        nxt = week_events(df_clim, df_w_daily, ctx['anomalies_applied'], win['next_mon'], win['next_sun'], today_mx(), params['clima'] and weather_ok, weather_ok)
+        notice = next_week_notice(nxt, win)
+    render_alert_center(build_alerts(params, ctx, m_t, df_w_daily, weather_ok), win, notice)
 
     # 3. Forecast charts
     st.subheader("📈 3. Continuous Projection")
@@ -2505,7 +3270,10 @@ def main():
     current_date = pd.Timestamp.now(tz=TZ)
     current_week = int(current_date.isocalendar().week)
     params = render_command_center(current_week, current_date)
-    render_dashboard(params)
+    if params['view'] == 'portfolio':
+        render_portfolio(params)
+    else:
+        render_dashboard(params)
 
 
 if __name__ == "__main__":

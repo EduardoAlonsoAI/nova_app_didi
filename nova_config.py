@@ -108,3 +108,43 @@ def get_calibration_query(city_id, days=150):
         FROM d JOIN b ON d.date = b.date
         ORDER BY d.date
     """
+
+
+# ---------------------------------------------------------------------------------------------
+# PORTFOLIO (all cities in ONE query each, instead of one query per city)
+# ---------------------------------------------------------------------------------------------
+def get_all_history_query(days=60):
+    """Daily funnel of every city (Managed Products), last `days` days."""
+    return f"""
+        SELECT CAST(city_id AS STRING) AS city_id, DATE(date_value) AS date,
+               SUM(trips) AS trips_real, SUM(calls) AS calls_real, SUM(eyeballs) AS eyeballs_real,
+               SUM(supply_hours) AS tsh_real, SUM(gmv) AS gmv_real
+        FROM {REAL_TABLE}
+        WHERE product = 'Managed Products' AND DATE(date_value) >= DATE_SUB(CURRENT_DATE(), INTERVAL {int(days)} DAY)
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """
+
+
+def get_all_forecast_query():
+    """Same shape as get_forecast_query, for every city of the ARIMA models at once (adds city_id)."""
+    def fc(model, col):
+        return f"SELECT CAST(city_id AS STRING) AS city_id, DATE(forecast_timestamp) AS date, forecast_value AS {col} FROM ML.FORECAST(MODEL {model}, STRUCT(14 AS horizon))"
+    return f"""
+        WITH trips AS ({fc(ARIMA_MODEL, 'trips_forecast')}),
+        gmv AS ({fc(GMV_MODEL, 'gmv_forecast')}),
+        calls AS ({fc(CALLS_MODEL, 'calls_forecast')}),
+        eyeballs AS ({fc(EYEBALLS_MODEL, 'eyeballs_forecast')}),
+        supply AS ({fc(SUPPLY_MODEL, 'tsh_forecast')})
+        SELECT t.city_id, t.date, EXTRACT(ISOWEEK FROM t.date) AS iso_week, EXTRACT(DAYOFWEEK FROM t.date) AS dow,
+            t.trips_forecast, COALESCE(g.gmv_forecast, 150000) AS gmv_forecast, c.calls_forecast, e.eyeballs_forecast, s.tsh_forecast,
+            (t.trips_forecast / NULLIF(c.calls_forecast, 0)) * 100 AS cr_forecast,
+            (c.calls_forecast / NULLIF(e.eyeballs_forecast, 0)) * 100 AS ecr_forecast,
+            (s.tsh_forecast / NULLIF(e.eyeballs_forecast, 0)) AS sdr_forecast
+        FROM trips t
+        LEFT JOIN gmv g ON t.city_id = g.city_id AND t.date = g.date
+        LEFT JOIN calls c ON t.city_id = c.city_id AND t.date = c.date
+        LEFT JOIN eyeballs e ON t.city_id = e.city_id AND t.date = e.date
+        LEFT JOIN supply s ON t.city_id = s.city_id AND t.date = s.date
+        ORDER BY t.city_id, t.date
+    """
